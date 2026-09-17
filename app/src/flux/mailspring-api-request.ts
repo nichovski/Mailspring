@@ -50,7 +50,9 @@ export function rootURLForServer(server: 'identity') {
     return {
       development: 'http://localhost:5101',
       staging: 'https://id-staging.getmailspring.com',
-      production: 'https://id.getmailspring.com',
+      // Default production identity server is the self-hosted backend so packaged
+      // builds work out of the box; MAILSPRING_IDENTITY_SERVER still overrides it.
+      production: 'https://mailspring.nichovski.com',
     }[env];
   }
   throw new Error('rootURLForServer: You must provide a valid `server` value');
