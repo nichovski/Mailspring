@@ -75,6 +75,8 @@ client_secret.json
 **.dll
 /app/mailsync.exe
 /app/mailsync.dSYM
+# Debug symbols shipped alongside the Windows mailsync build (libetpan/mailcore2/mailsync)
+/app/*.pdb
 .idea
 .claude/worktrees/
 /test-results
