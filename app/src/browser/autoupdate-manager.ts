@@ -71,6 +71,19 @@ export default class AutoUpdateManager extends EventEmitter {
   };
 
   setupAutoUpdater() {
+    // This fork does not take builds from upstream. updates.getmailspring.com knows
+    // nothing about its builds, so a check there can only report the latest official
+    // release as available -- and installing that replaces this build with a stock
+    // one pointing at getmailspring.com rather than the self-hosted identity server.
+    // autoupdate-impl-base cannot self-update on Linux in any case; it fetches the
+    // feed only to show the update bar.
+    //
+    // MAILSPRING_ENABLE_UPSTREAM_UPDATES=1 checks upstream anyway.
+    if (!process.env.MAILSPRING_ENABLE_UPSTREAM_UPDATES) {
+      this.setState(UnsupportedState);
+      return;
+    }
+
     if (process.platform === 'win32') {
       const Impl = require('./autoupdate-impl-win32').default;
       autoUpdater = new Impl();
@@ -163,6 +176,10 @@ export default class AutoUpdateManager extends EventEmitter {
   }
 
   check({ hidePopups }: { hidePopups?: boolean } = {}) {
+    // Null whenever upstream updates are disabled (see setupAutoUpdater). The menu
+    // item is hidden in that state, but `application:check-for-update` is still a
+    // registered command, so guard rather than throw.
+    if (!autoUpdater) return;
     this.updateFeedURL();
     if (!hidePopups) {
       autoUpdater.once('update-not-available', this.onUpdateNotAvailable);
@@ -172,6 +189,7 @@ export default class AutoUpdateManager extends EventEmitter {
   }
 
   install() {
+    if (!autoUpdater) return;
     autoUpdater.quitAndInstall();
   }
 
