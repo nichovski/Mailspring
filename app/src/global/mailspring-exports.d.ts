@@ -122,6 +122,8 @@ export type WorkspaceStore = typeof import('../flux/stores/workspace-store').def
 export const WorkspaceStore: WorkspaceStore;
 export type MailRulesStore = typeof import('../flux/stores/mail-rules-store').default;
 export const MailRulesStore: MailRulesStore;
+export type MutedSendersStore = typeof import('../flux/stores/muted-senders-store').default;
+export const MutedSendersStore: MutedSendersStore;
 export * from '../flux/stores/send-actions-store';
 export * from '../flux/stores/feature-usage-store';
 export type ThreadCountsStore = typeof import('../flux/stores/thread-counts-store').default;

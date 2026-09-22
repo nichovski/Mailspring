@@ -1,5 +1,11 @@
 # Mailspring Changelog
 
+## Unreleased
+
+Features:
+
+- Added sender muting per receiving account: right-click a sender to automatically mark their existing and incoming messages as read without notifications, and manage muted senders in Preferences → General.
+
 ## 1.24.1 (9/14/2026)
 
 Features:

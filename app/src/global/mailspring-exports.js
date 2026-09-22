@@ -144,6 +144,7 @@ load(`CategoryStore`, 'flux/stores/category-store');
 load(`UndoRedoStore`, 'flux/stores/undo-redo-store');
 load(`WorkspaceStore`, 'flux/stores/workspace-store');
 load(`MailRulesStore`, 'flux/stores/mail-rules-store');
+load(`MutedSendersStore`, 'flux/stores/muted-senders-store');
 load(`SendActionsStore`, 'flux/stores/send-actions-store');
 load(`FeatureUsageStore`, 'flux/stores/feature-usage-store');
 load(`ThreadCountsStore`, 'flux/stores/thread-counts-store');

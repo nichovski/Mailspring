@@ -203,11 +203,13 @@ export default class MessageItem extends React.Component<MessageItemProps, Messa
           <MessageControls thread={thread} message={message} />
         </div>
         <MessageParticipants
+          accountId={message.accountId}
           from={message.from}
           onClick={this._onClickParticipants}
           isDetailed={this.state.detailedHeaders}
         />
         <MessageParticipants
+          accountId={message.accountId}
           to={message.to}
           cc={message.cc}
           bcc={message.bcc}

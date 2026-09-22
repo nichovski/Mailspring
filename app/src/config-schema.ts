@@ -127,6 +127,17 @@ export default {
       reading: {
         type: 'object',
         properties: {
+          mutedSenders: {
+            type: 'array',
+            default: [],
+            items: {
+              type: 'object',
+              properties: {
+                accountId: { type: 'string' },
+                email: { type: 'string' },
+              },
+            },
+          },
           markAsReadDelay: {
             type: 'integer',
             default: 500,

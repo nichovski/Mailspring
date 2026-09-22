@@ -10,6 +10,7 @@ import {
   localized,
   DatabaseChangeRecord,
   TaskFactory,
+  MutedSendersStore,
 } from 'mailspring-exports';
 
 const WAIT_FOR_CHANGES_DELAY = 400;
@@ -57,7 +58,7 @@ export class Notifier {
 
     for (const msg of msgs) {
       // ensure the message is unread
-      if (msg.unread !== true) continue;
+      if (msg.unread !== true || MutedSendersStore.isMessageMuted(msg)) continue;
       // ensure the message was just created (eg: this is not a modification).
       // The sync engine attaches a JSON key to let us know that this is the first
       // message emitted about this Message. (Hooray hacks around reactive patterns)
@@ -215,6 +216,9 @@ export class Notifier {
   }
 
   async _notifyMessages() {
+    this.unnotifiedQueue = this.unnotifiedQueue.filter(
+      ({ message }) => !MutedSendersStore.isMessageMuted(message)
+    );
     // Set the guard immediately to prevent concurrent re-entry during async operations.
     // Without this, a second _onNewMessagesReceived call during the await below would
     // start a concurrent _notifyMessages, causing duplicate or conflicting notifications.
@@ -269,8 +273,13 @@ export class Notifier {
       }
 
       // Filter new messages to just the ones in the inbox
-      const newMessagesInInbox = newMessages.filter(({ threadId }) => {
-        return threads[threadId] && threads[threadId].categories.find((c) => c.role === 'inbox');
+      const newMessagesInInbox = newMessages.filter((message) => {
+        const { threadId } = message;
+        return (
+          !MutedSendersStore.isMessageMuted(message) &&
+          threads[threadId] &&
+          threads[threadId].categories.find((c) => c.role === 'inbox')
+        );
       });
 
       if (newMessagesInInbox.length === 0) {
