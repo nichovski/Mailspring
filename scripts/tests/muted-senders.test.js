@@ -204,6 +204,44 @@ test('muted messages never enter notifications or play sounds', async () => {
   assert.equal(h.notifier.unnotifiedQueue.length, 0);
 });
 
+test('ordinary persistence updates mark muted messages read without sync-complete flags', () => {
+  const h = setup();
+  h.store.setMuted('account', 'warmup@example.com', true);
+  const muted = h.message('warmup@example.com');
+  h.store._onDatabaseChanged({
+    type: 'persist',
+    objectClass: 'Message',
+    objects: [muted, h.message('person@example.com', { id: 'other' })],
+    objectsRawJSON: [{ id: muted.id }, { id: 'other' }],
+  });
+  assert.equal(h.tasks.length, 1);
+  assert.equal(h.tasks[0].messages.length, 1);
+  assert.equal(h.tasks[0].messages[0].id, muted.id);
+  assert.equal(h.tasks[0].unread, false);
+
+  // The read task's own persistence event must not queue another task.
+  h.sync([h.message('warmup@example.com', { unread: false })], 'ordinaryUpdate');
+  assert.equal(h.tasks.length, 1);
+
+  // A later server update restoring unread must enforce the mute again.
+  h.sync([muted], 'ordinaryUpdate');
+  assert.equal(h.tasks.length, 2);
+});
+
+test('deletions and thread updates do not queue mute tasks', () => {
+  const h = setup();
+  h.store.setMuted('account', 'warmup@example.com', true);
+  for (const [type, objectClass] of [['unpersist', 'Message'], ['persist', 'Thread']]) {
+    h.store._onDatabaseChanged({
+      type,
+      objectClass,
+      objects: [h.message('warmup@example.com')],
+      objectsRawJSON: [],
+    });
+  }
+  assert.equal(h.tasks.length, 0);
+});
+
 test('mute is rechecked after asynchronous thread lookup', async () => {
   const h = setup();
   const pending = h.notifier._onNewMessagesReceived([h.message('warmup@example.com')]);

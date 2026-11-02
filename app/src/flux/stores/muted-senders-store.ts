@@ -57,12 +57,9 @@ export class MutedSendersStore extends MailspringStore {
 
   _onDatabaseChanged = (record: DatabaseChangeRecord<Message>) => {
     if (record.type !== 'persist' || record.objectClass !== Message.name) return;
-    const syncedIds = new Set(
-      record.objectsRawJSON
-        .filter((json) => json.headersSyncComplete || json.fullSyncComplete)
-        .map((json) => json.id)
-    );
-    this._markAsRead(record.objects.filter((message) => syncedIds.has(message.id)));
+    // Sync-complete flags are only emitted once. Later server flag updates can
+    // make a muted message unread again, and must enforce the mute as well.
+    this._markAsRead(record.objects);
   };
 
   async _markExistingAsRead() {

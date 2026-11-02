@@ -37,9 +37,9 @@ Unmuting restores normal handling for future messages in that account. It does n
 
 Sender addresses are trimmed and compared case-insensitively, using exact address matches rather than display names, substrings, or domains. The account ID must also match. Entries without an account ID, including legacy plain-string entries, do not act as global mutes.
 
-The store listens for message persistence records carrying `headersSyncComplete` or `fullSyncComplete`. It can mark matching messages read before their bodies finish downloading and operates independently of whether desktop notifications are enabled. On startup and configuration changes, it also checks cached unread, non-draft messages against the current settings.
+The store checks every message persistence record, including ordinary server flag updates without `headersSyncComplete` or `fullSyncComplete`. These flags only accompany initial sync events; relying on them allowed muted mail to remain unread after later updates. It can mark matching messages read before their bodies finish downloading and operates independently of whether desktop notifications are enabled. Read-state persistence events do not queue further tasks because already-read messages are excluded. On startup and configuration changes, it also checks cached unread, non-draft messages against the current settings.
 
-Read changes use `ChangeUnreadTask` through the existing sync engine. Tasks contain only matching messages, grouped by account and batched in groups of up to 100. They do not mark an entire conversation read, so unrelated messages within a thread remain unaffected. Automatic tasks are not added to the undo history.
+Read changes use `ChangeUnreadTask` through the existing sync engine. Tasks contain only matching messages, grouped by account and batched in groups of up to 100. They do not mark an entire conversation read, so unrelated messages within a thread remain unaffected. Automatic tasks are not added to the undo history. Message-scoped tasks omit the empty `threadIds` key when serialized: the sync engine gives that key precedence over `messageIds`, even when empty. Keeping both keys caused tasks to complete without changing any mail.
 
 `app/internal_packages/unread-notifications/lib/main.ts` checks the mute before considering a new message for notification, after asynchronous thread lookup, and before draining the notification queue. These checks suppress notifications without waiting for the read-status task to complete.
 
@@ -58,10 +58,11 @@ Run the focused regression suite from the repository root:
 
 ```bash
 node scripts/tests/muted-senders.test.js
+node scripts/tests/change-mail-task.test.js
 npm run typecheck
 ```
 
-The 11 focused tests cover exact sender matching, account isolation, existing mail, incoming sync events, disabled notifications, notification timing, queued summaries, unmuting, and invalid global entries. They load the production store and notifier with mocked database, configuration, and notification services; they do not replace a live provider integration test.
+The 13 focused tests cover ordinary updates without sync-complete flags, repeated unread updates, read-event loop prevention, ignored deletion/thread events, exact sender matching, account isolation, existing mail, incoming sync events, disabled notifications, notification timing, queued summaries, unmuting, and invalid global entries. They load the production store and notifier with mocked database, configuration, and notification services; they do not replace a live provider integration test.
 
 The focused suite, TypeScript checks, and ESLint on the changed application files passed. A Linux production build was generated with:
 
@@ -70,3 +71,7 @@ npm run build -- --skip-installers
 ```
 
 The packaged files were checked for the account-scoped mute controls, installed into the existing Linux application directory, and verified against the build. The updated app launched successfully. Live sender-menu interaction and provider-side read synchronization were not verified in this session.
+
+## Sidebar unread fix validation
+
+The serialization regression tests load the production model, attributes, and read-task classes, checking message targeting through serialization and cloning and preserving thread-targeted undo behavior. In the running app, applying the serialization fix and reprocessing existing mutes cleared all 22 matching unread messages across the four configured account/sender pairs. The sidebar count store matched the database afterward.
