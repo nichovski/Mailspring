@@ -7,7 +7,6 @@ const { Menu, MenuItem, clipboard } = require('@electron/remote');
 const MAX_COLLAPSED = 5;
 
 interface MessageParticipantsProps {
-  accountId?: string;
   to: Contact[];
   cc: Contact[];
   bcc: Contact[];
@@ -84,15 +83,15 @@ export default class MessageParticipants extends React.Component<MessageParticip
         click: () => Actions.composeNewDraftToRecipient(contact),
       })
     );
-    if (this.props.accountId && contact.email && this.props.from.includes(contact)) {
-      const muted = MutedSendersStore.isMuted(this.props.accountId, contact.email);
+    if (contact.email && this.props.from.includes(contact)) {
+      const muted = MutedSendersStore.isMuted(contact.email);
       menu.append(new MenuItem({ type: 'separator' }));
       menu.append(
         new MenuItem({
           label: muted
-            ? localized('Unmute Sender for This Account')
-            : localized('Mute Sender for This Account (Mark as Read)'),
-          click: () => MutedSendersStore.setMuted(this.props.accountId, contact.email, !muted),
+            ? localized('Unmute Sender')
+            : localized('Mute Sender in All Accounts (Mark as Read)'),
+          click: () => MutedSendersStore.setMuted(contact.email, !muted),
         })
       );
     }

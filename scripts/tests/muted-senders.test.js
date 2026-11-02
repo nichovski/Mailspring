@@ -152,17 +152,17 @@ function setup() {
 
 test('sender matching is exact, case-insensitive, persistent, and reversible', () => {
   const h = setup();
-  h.store.setMuted('account', ' Warmup@Example.com ', true);
-  assert.equal(h.store.isMuted('account', 'warmup@example.com'), true);
-  assert.equal(h.store.isMuted('account', 'otherwarmup@example.com'), false);
-  assert.equal(h.store.isMuted('account', 'warmup@example.com.evil'), false);
-  h.store.setMuted('account', 'WARMUP@example.com', true);
+  h.store.setMuted(' Warmup@Example.com ', true);
+  assert.equal(h.store.isMuted('warmup@example.com'), true);
+  assert.equal(h.store.isMuted('otherwarmup@example.com'), false);
+  assert.equal(h.store.isMuted('warmup@example.com.evil'), false);
+  h.store.setMuted('WARMUP@example.com', true);
   assert.equal(h.settings['core.reading.mutedSenders'].length, 1);
-  h.store.setMuted('account', 'warmup@example.com', false);
-  assert.equal(h.store.isMuted('account', 'warmup@example.com'), false);
+  h.store.setMuted('warmup@example.com', false);
+  assert.equal(h.store.isMuted('warmup@example.com'), false);
 });
 
-test('existing mail is marked read per message and per account, leaving unrelated mail alone', async () => {
+test('existing mail is marked read per message in every account, leaving unrelated mail alone', async () => {
   const h = setup();
   h.cache([
     h.message('warmup@example.com', { id: 'a' }),
@@ -171,12 +171,12 @@ test('existing mail is marked read per message and per account, leaving unrelate
     h.message('warmup@example.com', { id: 'draft', draft: true }),
     h.message('warmup@example.com', { id: 'read', unread: false }),
   ]);
-  h.store.setMuted('account', 'warmup@example.com', true);
+  h.store.setMuted('warmup@example.com', true);
   await new Promise(setImmediate);
-  assert.equal(h.tasks.length, 1);
+  assert.equal(h.tasks.length, 2);
   assert.deepEqual(
     h.tasks.map((task) => task.messages.map((m) => m.id).join()),
-    ['a']
+    ['a', 'b']
   );
   for (const task of h.tasks) {
     assert.equal(task.unread, false);
@@ -186,7 +186,7 @@ test('existing mail is marked read per message and per account, leaving unrelate
 
 test('header sync marks old and new muted mail read even with notifications disabled', () => {
   const h = setup();
-  h.store.setMuted('account', 'warmup@example.com', true);
+  h.store.setMuted('warmup@example.com', true);
   h.settings['core.notifications.enabled'] = false;
   h.sync([h.message('warmup@example.com', { date: new Date(0) })]);
   assert.equal(h.tasks.length, 1);
@@ -197,7 +197,7 @@ test('header sync marks old and new muted mail read even with notifications disa
 
 test('muted messages never enter notifications or play sounds', async () => {
   const h = setup();
-  h.store.setMuted('account', 'warmup@example.com', true);
+  h.store.setMuted('warmup@example.com', true);
   await h.notifier._onMessagesChanged([h.message('warmup@example.com')], new Set(['message']));
   assert.equal(h.displayed.length, 0);
   assert.equal(h.sounds.length, 0);
@@ -206,7 +206,7 @@ test('muted messages never enter notifications or play sounds', async () => {
 
 test('ordinary persistence updates mark muted messages read without sync-complete flags', () => {
   const h = setup();
-  h.store.setMuted('account', 'warmup@example.com', true);
+  h.store.setMuted('warmup@example.com', true);
   const muted = h.message('warmup@example.com');
   h.store._onDatabaseChanged({
     type: 'persist',
@@ -230,7 +230,7 @@ test('ordinary persistence updates mark muted messages read without sync-complet
 
 test('deletions and thread updates do not queue mute tasks', () => {
   const h = setup();
-  h.store.setMuted('account', 'warmup@example.com', true);
+  h.store.setMuted('warmup@example.com', true);
   for (const [type, objectClass] of [['unpersist', 'Message'], ['persist', 'Thread']]) {
     h.store._onDatabaseChanged({
       type,
@@ -245,7 +245,7 @@ test('deletions and thread updates do not queue mute tasks', () => {
 test('mute is rechecked after asynchronous thread lookup', async () => {
   const h = setup();
   const pending = h.notifier._onNewMessagesReceived([h.message('warmup@example.com')]);
-  h.store.setMuted('account', 'warmup@example.com', true);
+  h.store.setMuted('warmup@example.com', true);
   await pending;
   assert.equal(h.displayed.length, 0);
   assert.equal(h.sounds.length, 0);
@@ -256,7 +256,7 @@ test('queued muted messages are removed before summary notifications', async () 
   h.notifier.unnotifiedQueue = Array.from({ length: 5 }, () => ({
     message: h.message('warmup@example.com'),
   }));
-  h.store.setMuted('account', 'warmup@example.com', true);
+  h.store.setMuted('warmup@example.com', true);
   await h.notifier._notifyMessages();
   assert.equal(h.displayed.length, 0);
   assert.equal(h.notifier.hasScheduledNotify, false);
@@ -264,8 +264,8 @@ test('queued muted messages are removed before summary notifications', async () 
 
 test('unmuting restores notifications and stops automatic read tasks', async () => {
   const h = setup();
-  h.store.setMuted('account', 'warmup@example.com', true);
-  h.store.setMuted('account', 'warmup@example.com', false);
+  h.store.setMuted('warmup@example.com', true);
+  h.store.setMuted('warmup@example.com', false);
   h.sync([h.message('warmup@example.com')]);
   assert.equal(h.tasks.length, 0);
   await h.notifier._onMessagesChanged([h.message('warmup@example.com')], new Set(['message']));
@@ -275,7 +275,7 @@ test('unmuting restores notifications and stops automatic read tasks', async () 
 
 test('other senders in the same thread still notify while a sender is muted', async () => {
   const h = setup();
-  h.store.setMuted('account', 'warmup@example.com', true);
+  h.store.setMuted('warmup@example.com', true);
   await h.notifier._onMessagesChanged(
     [h.message('warmup@example.com'), h.message('person@example.com', { id: 'other' })],
     new Set(['message', 'other'])
@@ -285,34 +285,45 @@ test('other senders in the same thread still notify while a sender is muted', as
   assert.equal(h.sounds.length, 1);
 });
 
-test('the same sender remains unread and notifies in another receiving account', async () => {
+test('a muted sender is muted in every receiving account', async () => {
   const h = setup();
-  h.store.setMuted('account', 'hi@doteli.org', true);
-  const muted = h.message('hi@doteli.org', { id: 'muted' });
-  const other = h.message('hi@doteli.org', { id: 'other', accountId: 'second' });
-  h.sync([muted, other]);
-  assert.equal(h.tasks.length, 1);
-  assert.equal(h.tasks[0].messages.length, 1);
-  assert.equal(h.tasks[0].messages[0].id, 'muted');
-  await h.notifier._onMessagesChanged([muted, other], new Set(['muted', 'other']));
+  h.store.setMuted('hi@doteli.org', true);
+  const first = h.message('hi@doteli.org', { id: 'first' });
+  const second = h.message('hi@doteli.org', { id: 'second', accountId: 'second' });
+  const person = h.message('person@example.com', { id: 'person', accountId: 'second' });
+  h.sync([first, second, person]);
+  assert.deepEqual(
+    h.tasks.map((task) => [task.messages[0].accountId, task.messages.map((m) => m.id).join()]),
+    [
+      ['account', 'first'],
+      ['second', 'second'],
+    ]
+  );
+  await h.notifier._onMessagesChanged(
+    [first, second, person],
+    new Set(['first', 'second', 'person'])
+  );
   assert.equal(h.displayed.length, 1);
-  assert.equal(h.displayed[0].messageId, 'other');
-  assert.equal(h.sounds.length, 1);
+  assert.equal(h.displayed[0].messageId, 'person');
 });
 
-test('unmuting a sender in one account preserves their mute in another', () => {
+test('mutes saved per account by older builds apply to every account', () => {
   const h = setup();
-  h.store.setMuted('account', 'hi@doteli.org', true);
-  h.store.setMuted('second', 'hi@doteli.org', true);
-  h.store.setMuted('account', 'hi@doteli.org', false);
-  assert.equal(h.store.isMuted('account', 'hi@doteli.org'), false);
-  assert.equal(h.store.isMuted('second', 'hi@doteli.org'), true);
+  h.settings['core.reading.mutedSenders'] = [
+    { accountId: 'account', email: 'hi@doteli.org' },
+    { accountId: 'second', email: 'HI@doteli.org' },
+  ];
+  assert.deepEqual([...h.store.entries()], ['hi@doteli.org']);
+  assert.equal(h.store.isMessageMuted(h.message('hi@doteli.org', { accountId: 'third' })), true);
+  h.store.setMuted('hi@doteli.org', false);
+  assert.equal(h.settings['core.reading.mutedSenders'].length, 0);
 });
 
-test('missing account IDs and old global entries cannot mute all accounts', () => {
+test('empty addresses and plain-string entries mute nobody', () => {
   const h = setup();
   h.settings['core.reading.mutedSenders'] = ['hi@doteli.org'];
-  assert.equal(h.store.isMuted('account', 'hi@doteli.org'), false);
-  h.store.setMuted('', 'hi@doteli.org', true);
-  assert.equal(h.store.isMuted('second', 'hi@doteli.org'), false);
+  assert.equal(h.store.isMuted('hi@doteli.org'), false);
+  h.store.setMuted('  ', true);
+  assert.deepEqual(h.settings['core.reading.mutedSenders'], ['hi@doteli.org']);
+  assert.equal(h.store.isMuted(''), false);
 });
