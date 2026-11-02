@@ -133,7 +133,6 @@ export default {
             items: {
               type: 'object',
               properties: {
-                accountId: { type: 'string' },
                 email: { type: 'string' },
               },
             },

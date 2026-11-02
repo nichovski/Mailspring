@@ -1,7 +1,7 @@
 /* eslint global-require: 0*/
 import React from 'react';
 import fs from 'fs';
-import { localized, MutedSendersStore, AccountStore } from 'mailspring-exports';
+import { localized, MutedSendersStore } from 'mailspring-exports';
 import ConfigSchemaItem from './config-schema-item';
 import WorkspaceSection from './workspace-section';
 import SendingSection from './sending-section';
@@ -74,18 +74,13 @@ class PreferencesGeneral extends React.Component<{
               <h6>{localized('Muted Senders')}</h6>
               <div className="platform-note">
                 {localized(
-                  'Right-click a sender in a message to mute them. Their existing and incoming messages are automatically marked as read without notifications for that account only while Mailspring is running.'
+                  'Right-click a sender in a message to mute them. Their existing and incoming messages are automatically marked as read without notifications in all accounts while Mailspring is running.'
                 )}
               </div>
-              {mutedSenders.map(({ accountId, email }) => (
-                <div className="item" key={`${accountId}:${email}`}>
-                  <span>
-                    {email} — {AccountStore.accountForId(accountId)?.emailAddress || accountId}
-                  </span>{' '}
-                  <button
-                    className="btn"
-                    onClick={() => MutedSendersStore.setMuted(accountId, email, false)}
-                  >
+              {mutedSenders.map((email) => (
+                <div className="item" key={email}>
+                  <span>{email}</span>{' '}
+                  <button className="btn" onClick={() => MutedSendersStore.setMuted(email, false)}>
                     {localized('Unmute')}
                   </button>
                 </div>

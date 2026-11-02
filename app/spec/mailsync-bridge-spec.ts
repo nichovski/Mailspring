@@ -49,6 +49,8 @@ describe('MailsyncBridge account clients', function () {
     await bridge._onRestartAccountSync(
       account({ imap_host: 'outlook.office365.com', graph_send: true })
     );
+    // The relaunch registers the client at once and fills in its account after the keys.
+    await new Promise((resolve) => process.nextTick(resolve));
     const second = bridge.clients()['acct-1'];
     expect(second).not.toBe(first);
     expect((second.account as any).settings.graph_send).toBe(true);
@@ -56,6 +58,8 @@ describe('MailsyncBridge account clients', function () {
   });
 
   it('does not launch a client for an account it is not running', async function () {
+    // Keep the constructor's own ensureClients from launching it.
+    accounts = [];
     await bridge._onRestartAccountSync(account({ imap_host: 'outlook.office365.com' }));
     expect(bridge.clients()['acct-1']).toBeUndefined();
   });
@@ -79,6 +83,18 @@ describe('MailsyncBridge account clients', function () {
     finishReset();
     await resetting;
     expect(bridge.clients()['acct-1']).not.toBe(resetClient);
+  });
+
+  it('hands a task queued during the keychain read to the account client', function () {
+    (KeyManager._getKeyHash as jasmine.Spy).andReturn(new Promise(() => {}));
+    spyOn(MailsyncProcess.prototype, 'sendMessage');
+    spyOn(AppEnv, 'showErrorDialog');
+
+    bridge.ensureClients();
+    bridge.sendMessageToAccount('acct-1', { type: 'queue-task' });
+
+    expect(AppEnv.showErrorDialog).not.toHaveBeenCalled();
+    expect(MailsyncProcess.prototype.sendMessage).toHaveBeenCalledWith({ type: 'queue-task' });
   });
 });
 

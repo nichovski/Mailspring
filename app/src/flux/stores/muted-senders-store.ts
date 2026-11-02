@@ -19,39 +19,32 @@ export class MutedSendersStore extends MailspringStore {
     }
   }
 
-  entries(): { accountId: string; email: string }[] {
-    return (AppEnv.config.get(CONFIG_KEY) || []).filter(
-      (entry) => entry && typeof entry.accountId === 'string' && typeof entry.email === 'string'
-    );
+  // Muted sender addresses. Entries saved by older builds also carry an
+  // accountId; it is ignored so those mutes apply to every account.
+  entries(): string[] {
+    const emails = (AppEnv.config.get(CONFIG_KEY) || [])
+      .filter((entry) => entry && typeof entry.email === 'string')
+      .map((entry) => normalize(entry.email))
+      .filter(Boolean);
+    return [...new Set<string>(emails)];
   }
 
-  isMuted(accountId: string, email: string) {
+  isMuted(email: string) {
     const address = normalize(email);
-    return (
-      !!accountId &&
-      !!address &&
-      this.entries().some(
-        (entry) => entry.accountId === accountId && normalize(entry.email) === address
-      )
-    );
+    return !!address && this.entries().includes(address);
   }
 
   isMessageMuted(message: Message) {
-    return (
-      !message.draft &&
-      message.from.some((contact) => this.isMuted(message.accountId, contact.email))
-    );
+    return !message.draft && message.from.some((contact) => this.isMuted(contact.email));
   }
 
-  setMuted(accountId: string, email: string, muted: boolean) {
+  setMuted(email: string, muted: boolean) {
     const address = normalize(email);
-    if (!accountId || !address) return;
-    const remaining = this.entries().filter(
-      (entry) => entry.accountId !== accountId || normalize(entry.email) !== address
-    );
+    if (!address) return;
+    const remaining = this.entries().filter((entry) => entry !== address);
     AppEnv.config.set(
       CONFIG_KEY,
-      muted ? [...remaining, { accountId, email: address }] : remaining
+      (muted ? [...remaining, address] : remaining).map((entry) => ({ email: entry }))
     );
   }
 

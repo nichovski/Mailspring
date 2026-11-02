@@ -132,9 +132,12 @@ export function lastLoggedException(stderr: string): string {
 export class MailsyncProcess extends EventEmitter {
   _proc: ChildProcess = null;
   _win = null;
+  // Mailsync reads the account and identity JSON as its first two stdin lines, written once it
+  // prompts for them. The bridge also registers a client before spawning it, after the
+  // account's secrets are read from the keychain. A message sent before that point waits here.
+  _unsentMessages: Record<string, unknown>[] = [];
+  _acceptsMessages = false;
 
-  // The bridge registers a client before spawning it, after the account's secrets are read
-  // from the keychain; a message sent in between is lost.
   get spawned() {
     return !!this._proc;
   }
@@ -246,6 +249,12 @@ export class MailsyncProcess extends EventEmitter {
         rs.push(`${JSON.stringify(this.account)}\n${JSON.stringify(this.identity)}\n`);
         rs.push(null);
         rs.pipe(this._proc.stdin, { end: false });
+        rs.on('end', () => {
+          this._acceptsMessages = true;
+          for (const json of this._unsentMessages.splice(0)) {
+            this.sendMessage(json);
+          }
+        });
       });
     }
   }
@@ -515,6 +524,10 @@ export class MailsyncProcess extends EventEmitter {
   }
 
   sendMessage(json) {
+    if (!this._acceptsMessages) {
+      this._unsentMessages.push(json);
+      return;
+    }
     if (!Utils) {
       Utils = require('mailspring-exports').Utils;
     }
