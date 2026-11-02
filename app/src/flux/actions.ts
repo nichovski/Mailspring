@@ -126,6 +126,15 @@ export const queueTasks = create('queueTasks', ActionScopeMainWindow);
 export const cancelTask = create('cancelTask', ActionScopeMainWindow);
 
 /*
+  Public: Restart an {Account}'s sync process with its current settings, which the process
+  reads only at launch. Fired when onboarding reconnects an account; an account without a
+  running process is launched by `ensureClients` instead.
+
+  *Scope: Main Window*
+  */
+export const restartAccountSync = create('restartAccountSync', ActionScopeMainWindow);
+
+/*
   Public: Queue a task that does not require processing, placing it on the undo stack only.
   *Scope: Main Window*
   */
@@ -523,6 +532,18 @@ export const popToRootSheet = create('popToRootSheet', ActionScopeWindow);
   */
 export const pushSheet = create('pushSheet', ActionScopeWindow);
 
+/*
+  Public: Replace the Sheet stack maintained by the {WorkspaceStore} in one change, with no
+  push animation. The first sheet must be a root sheet.
+
+  *Scope: Window*
+
+  ```javascript
+  Actions.showSheetStack([WorkspaceStore.Sheet.Views, WorkspaceStore.Sheet.ViewPage])
+  ```
+  */
+export const showSheetStack = create('showSheetStack', ActionScopeWindow);
+
 export const addMailRule = create('addMailRule', ActionScopeWindow);
 export const reorderMailRule = create('reorderMailRule', ActionScopeWindow);
 export const updateMailRule = create('updateMailRule', ActionScopeWindow);
@@ -554,6 +575,8 @@ export const expandSyncState = create('expandSyncState', ActionScopeWindow);
 export const searchQuerySubmitted = create('searchQuerySubmitted', ActionScopeWindow);
 export const searchQueryChanged = create('searchQueryChanged', ActionScopeWindow);
 export const searchCompleted = create('searchCompleted', ActionScopeWindow);
+export const remoteSearchResultReceived = create('remoteSearchResultReceived', ActionScopeWindow);
+export const mailsyncProcessExited = create('mailsyncProcessExited', ActionScopeWindow);
 
 // Calendar
 export const focusCalendarEvent = create('focusCalendarEvent', ActionScopeWindow);

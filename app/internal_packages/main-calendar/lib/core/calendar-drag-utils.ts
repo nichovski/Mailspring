@@ -8,12 +8,12 @@ import {
 } from './calendar-drag-types';
 import {
   EventOccurrence,
-  coveredDates,
+  occurrenceAt,
   occurrenceStartUnix,
   occurrenceEndUnix,
 } from './calendar-data-source';
 import { CalendarDateUtils } from 'mailspring-exports';
-import { inclusiveAllDayEnd } from './calendar-helpers';
+import { formatTime, inclusiveAllDayEnd } from './calendar-helpers';
 import {
   DEFAULT_TIMED_EVENT_DURATION_SECONDS,
   MIN_EVENT_DURATION_SECONDS,
@@ -106,19 +106,13 @@ function shiftDateKeepingClock(instant: number, drawnAt: number, mouseTime: numb
  * @returns A synthetic EventOccurrence representing the drag preview
  */
 export function createDragPreviewEvent(dragState: DragState): EventOccurrence {
-  const { event, previewStart, previewEnd } = dragState;
-  // coveredDates replaces the spread's pre-drag dates. Timed previews also carry the preview
-  // instants; all-day previews carry only the shifted dates.
-  const shared = {
-    ...event,
-    ...coveredDates(previewStart, previewEnd, dragState.previewIsAllDay),
+  const { event, previewStart, previewEnd, previewIsAllDay } = dragState;
+  return {
+    ...occurrenceAt(event, { start: previewStart, end: previewEnd, isAllDay: previewIsAllDay }),
     id: `${event.id}-drag-preview`,
     isDragPreview: true,
     originalEventId: event.id,
   };
-  return dragState.previewIsAllDay
-    ? { ...shared, isAllDay: true }
-    : { ...shared, isAllDay: false, start: previewStart, end: previewEnd };
 }
 
 /**
@@ -138,22 +132,6 @@ export function getEventsWithDragPreview(
   // Filter out the original event being dragged and add synthetic preview
   const filtered = events.filter((e) => e.id !== dragState.event.id);
   return [...filtered, createDragPreviewEvent(dragState)];
-}
-
-/**
- * Parse an event occurrence ID to extract the underlying event ID
- * The occurrence ID format is `${eventId}-e${idx}`
- * @param occurrenceId The occurrence ID
- * @returns The extracted event ID (or the original ID if not an occurrence format)
- */
-export function parseEventIdFromOccurrence(occurrenceId: string): string {
-  const match = occurrenceId.match(/^(.+)-e\d+$/);
-  if (match) {
-    return match[1];
-  }
-  // If the pattern doesn't match, return the original ID
-  // (it might be a non-occurrence event ID that can be edited directly)
-  return occurrenceId;
 }
 
 /**
@@ -239,8 +217,13 @@ export function createDragState(
   // The grab offset keeps the event from jumping when the drag starts. `mouseTime` comes from
   // the grid, so it is measured against the grid's reading of the edge, not the edge itself.
   let clickOffset = 0;
+  let grabDayOffset = 0;
   if (hitZone.mode === 'move') {
     clickOffset = mouseTime - CalendarDateUtils.firstOccurrenceUnix(start);
+    grabDayOffset = CalendarDateUtils.calendarDaysBetween(
+      event.startDate,
+      CalendarDateUtils.calendarDateFromUnix(mouseTime)
+    );
   } else if (hitZone.mode === 'resize-end') {
     clickOffset = mouseTime - CalendarDateUtils.firstOccurrenceUnix(end);
   }
@@ -251,6 +234,7 @@ export function createDragState(
     originalStart: start,
     originalEnd: end,
     clickOffset,
+    grabDayOffset,
     initialMouseX: mouseX,
     initialMouseY: mouseY,
     previewStart: start,
@@ -325,10 +309,15 @@ export function updateDragState(
   switch (state.mode) {
     case 'move': {
       if (previewIsAllDay) {
-        // Target is all-day. An all-day event keeps its whole-day span; a converting timed
-        // event becomes a single day. Snap the start, then span that many whole days.
+        // Target is all-day. An all-day event keeps its whole-day span and the day it was grabbed
+        // by; a converting timed event becomes a single day under the cursor.
         const numDays = state.event.isAllDay ? Math.max(1, Math.round(eventDuration / 86400)) : 1;
-        previewStart = moment.unix(mouseTime).startOf('day').unix();
+        const cursorDay = CalendarDateUtils.calendarDateFromUnix(mouseTime);
+        previewStart = CalendarDateUtils.dayStartUnix(
+          state.event.isAllDay
+            ? CalendarDateUtils.addCalendarDays(cursorDay, -state.grabDayOffset)
+            : cursorDay
+        );
         // Via the helpers, not a raw add: where the drop day's midnight doesn't exist, add()
         // keeps the 01:00 wall clock and snapAllDayTimes then rounds it up an extra day.
         previewEnd = CalendarDateUtils.nextDayStartUnix(
@@ -347,10 +336,11 @@ export function updateDragState(
         // Timed event on a day-granular surface — a month cell, or a recurring event on the
         // all-day row (not converted). Shift by whole calendar days and keep the clock time;
         // moment add() holds 10am at 10am across a DST change.
-        const daysDelta = CalendarDateUtils.calendarDaysBetween(
-          CalendarDateUtils.calendarDateFromUnix(state.originalStart),
-          CalendarDateUtils.calendarDateFromUnix(mouseTime)
-        );
+        const daysDelta =
+          CalendarDateUtils.calendarDaysBetween(
+            CalendarDateUtils.calendarDateFromUnix(state.originalStart),
+            CalendarDateUtils.calendarDateFromUnix(mouseTime)
+          ) - state.grabDayOffset;
         previewStart = moment.unix(state.originalStart).add(daysDelta, 'days').unix();
         previewEnd = previewStart + eventDuration;
       } else {
@@ -450,24 +440,17 @@ export function updateDragState(
   };
 }
 
+/** Whether a drag may begin on this event: not a preview's, not on a read-only calendar, not cancelled. */
+export function canAttemptMove(event: EventOccurrence, isCalendarReadOnly = false): boolean {
+  return !event.isDragPreview && !isCalendarReadOnly && !event.isCancelled;
+}
+
 /**
- * Check if an event's time can be changed by drag, resize, or keyboard
- * @param event The event occurrence
- * @param isCalendarReadOnly Whether the calendar containing this event is read-only
- * @returns True if the event can be moved
+ * Whether the event may actually be moved: only the organizer reschedules a meeting (RFC 5546
+ * section 2.1.4); a guest's drag is answered with the offer to counter instead.
  */
 export function canMoveEvent(event: EventOccurrence, isCalendarReadOnly = false): boolean {
-  // Don't allow moving events in read-only calendars
-  if (isCalendarReadOnly) {
-    return false;
-  }
-
-  // Don't allow moving cancelled events
-  if (event.isCancelled) {
-    return false;
-  }
-
-  return true;
+  return canAttemptMove(event, isCalendarReadOnly) && event.isMine;
 }
 
 /**
@@ -487,7 +470,64 @@ export function formatDragPreviewTime(start: number, end: number, isAllDay: bool
     return `${startDate} - ${endDate}`;
   }
 
-  const startTime = moment.unix(start).format('h:mm A');
-  const endTime = moment.unix(end).format('h:mm A');
-  return `${startTime} - ${endTime}`;
+  return `${formatTime(start)} - ${formatTime(end)}`;
+}
+
+/** A press on empty grid space and where the pointer has gone since. */
+export interface CreateDragState {
+  /** The instant under the pointer when it went down, in unix seconds. */
+  anchorTime: number;
+  /** The instant under the pointer now, in unix seconds. */
+  currentTime: number;
+  isAllDay: boolean;
+  /** False until the pointer has travelled a snap interval; a press that has not is a click. */
+  isDragging: boolean;
+  /** The calendar the event would be created on, so the preview paints in its colour. */
+  calendarId: string;
+  accountId: string;
+}
+
+/** New events snap to the quarter hour, which is what the grid lines imply. */
+export const CREATE_DRAG_SNAP_SECONDS = 15 * 60;
+
+/**
+ * The range a create-drag describes, ordered and snapped. The anchor is whichever end the
+ * pointer started at, and a drag that barely moved still describes one snap interval, not an
+ * instant.
+ */
+export function createDragRange(state: CreateDragState): { start: number; end: number } {
+  const snap = (t: number) => Math.round(t / CREATE_DRAG_SNAP_SECONDS) * CREATE_DRAG_SNAP_SECONDS;
+  const from = snap(Math.min(state.anchorTime, state.currentTime));
+  const to = snap(Math.max(state.anchorTime, state.currentTime));
+  return { start: from, end: Math.max(to, from + CREATE_DRAG_SNAP_SECONDS) };
+}
+
+/** The range being drawn, as an occurrence, so it renders through the normal pipeline. */
+export function createNewEventPreview(state: CreateDragState): EventOccurrence {
+  const range = createDragRange(state);
+  // An all-day range's end is the last day the pointer covered; occurrenceAt wants the
+  // exclusive end, the next day's start.
+  const end = state.isAllDay
+    ? CalendarDateUtils.nextDayStartUnix(CalendarDateUtils.calendarDateFromUnix(range.end))
+    : range.end;
+  const preview = {
+    id: '__new_event_drag_preview',
+    accountId: state.accountId,
+    calendarId: state.calendarId,
+    title: '',
+    description: '',
+    location: '',
+    organizer: null,
+    attendees: [],
+    isDragPreview: true,
+  } as any;
+  return occurrenceAt(preview, { start: range.start, end, isAllDay: state.isAllDay });
+}
+
+/** A view's events plus the new event being drawn or edited, if any. */
+export function withNewEventPreview(
+  events: EventOccurrence[],
+  preview: EventOccurrence | null
+): EventOccurrence[] {
+  return preview ? [...events, preview] : events;
 }

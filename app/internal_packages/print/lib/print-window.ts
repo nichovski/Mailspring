@@ -4,6 +4,7 @@ import { pathToFileURL } from 'url';
 
 import { localized } from 'mailspring-exports';
 import { escapeHTML } from 'underscore.string';
+import { developerToolsAvailable } from '../../../src/developer-tools';
 
 const { app, BrowserWindow, dialog } = require('@electron/remote');
 
@@ -83,7 +84,8 @@ export default class PrintWindow {
       webPreferences: {
         preload: preloadPath,
         nodeIntegration: false,
-        contextIsolation: false,
+        contextIsolation: true,
+        devTools: developerToolsAvailable(),
       },
     });
 

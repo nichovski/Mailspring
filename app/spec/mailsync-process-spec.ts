@@ -1,4 +1,5 @@
-import { lastJSONResponse } from '../src/mailsync-process';
+import { EventEmitter } from 'events';
+import { lastJSONResponse, lastLoggedException, MailsyncProcess } from '../src/mailsync-process';
 
 describe('lastJSONResponse', function () {
   it('reads a result that has no trailing newline', function () {
@@ -38,6 +39,30 @@ describe('lastJSONResponse', function () {
   });
 });
 
+describe('lastLoggedException', function () {
+  const block = (details: string) =>
+    `[critical] \n***\n*** Mailspring Sync \n*** An exception occurred during program execution: \n*** ${details}\n***\n`;
+
+  it('keeps only the exception mailsync logged last', function () {
+    const stderr = block('{"key":"ErrorAuthentication"}') + block('A segmentation fault (SIGSEGV)');
+    const result = lastLoggedException(stderr);
+    expect(result).toContain('SIGSEGV');
+    expect(result).not.toContain('ErrorAuthentication');
+  });
+
+  it('finds the last exception in output written with Windows line endings', function () {
+    const stderr = (block('{"key":"ErrorAuthentication"}') + block('SIGSEGV')).replace(
+      /\n/g,
+      '\r\n'
+    );
+    expect(lastLoggedException(stderr)).not.toContain('ErrorAuthentication');
+  });
+
+  it('returns output with no logged exception unchanged', function () {
+    expect(lastLoggedException('dyld: Library not loaded\n')).toBe('dyld: Library not loaded\n');
+  });
+});
+
 describe('accumulating mailsync stdout', function () {
   // mailsync's result line carries the whole IMAP/SMTP conversation in `test` mode, so it
   // routinely spans more than one 64KB chunk, and a server error or account name is often
@@ -49,7 +74,7 @@ describe('accumulating mailsync stdout', function () {
   const chunks = [bytes.subarray(0, splitAt), bytes.subarray(splitAt)];
 
   it('mangles a character split across chunks when each chunk is decoded alone', function () {
-    const perChunk = chunks.map(c => c.toString('utf-8')).join('');
+    const perChunk = chunks.map((c) => c.toString('utf-8')).join('');
     expect(perChunk).not.toEqual(payload);
     expect(perChunk).toContain('�');
     expect(lastJSONResponse(perChunk).error).not.toEqual('Café serveur');
@@ -59,5 +84,59 @@ describe('accumulating mailsync stdout', function () {
     const joined = Buffer.concat(chunks).toString('utf-8');
     expect(joined).toEqual(payload);
     expect(lastJSONResponse(joined)).toEqual({ error: 'Café serveur' });
+  });
+});
+
+describe('interpreting a mailsync exit', function () {
+  let proc: MailsyncProcess = null;
+  let child: any = null;
+
+  beforeEach(function () {
+    proc = new MailsyncProcess({ configDirPath: '/tmp', resourcePath: '/tmp', verbose: false });
+    child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    spyOn(proc as any, '_spawnProcess').andCallFake(() => {
+      (proc as any)._proc = child;
+    });
+  });
+
+  const errorFromTest = (stdout: string, code: number) => {
+    const promise = proc.test();
+    child.stdout.emit('data', Buffer.from(stdout, 'utf-8'));
+    child.emit('close', code, null);
+    return promise.then(
+      () => {
+        throw new Error('expected `test` to reject');
+      },
+      (err) => err
+    );
+  };
+
+  it('flags a failure the engine classified as this machine being offline', async function () {
+    const err = await errorFromTest(
+      '{"error":"ErrorConnection","error_service":"imap","error_offline":true,"log":"..."}',
+      1
+    );
+    expect(err.isNetworkError).toBe(true);
+  });
+
+  it('does not flag a failure the server itself reported', async function () {
+    const err = await errorFromTest(
+      '{"error":"ErrorAuthentication","error_service":"imap","error_offline":false,"log":"..."}',
+      1
+    );
+    expect(err.isNetworkError).toBe(false);
+  });
+
+  it('does not flag a result from an engine that predates the field', async function () {
+    const err = await errorFromTest('{"error":"ErrorConnection","error_service":"imap"}', 1);
+    expect(err.isNetworkError).toBe(false);
+  });
+
+  it('reports a crash as an unknown error, whatever the dump contains', async function () {
+    const err = await errorFromTest('terminate called\n{"offline":true,"retryable":true', 134);
+    expect(err.message).toContain('mailsync: 134');
+    expect(err.isNetworkError).toBe(undefined);
   });
 });

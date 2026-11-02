@@ -1,5 +1,7 @@
 import { IpcMain, IpcMainInvokeEvent } from 'electron/main';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
+import { handleFromMailspringWindows } from './trusted-ipc';
 
 const fs = require('fs');
 const path = require('path');
@@ -25,14 +27,29 @@ export function cleanupPreviewToken(token: string): void {
   previewTokens.delete(token);
 }
 
+// The renderer loads renderer.html from app.asar.unpacked in packaged builds.
+const rendererPath = path.join(__dirname, '..', 'quickpreview', 'renderer.html');
+const allowedRendererPaths = [rendererPath, rendererPath.replace('app.asar', 'app.asar.unpacked')];
+
+const normalizeForComparison = (filePath: string) => {
+  const normalized = path.normalize(filePath);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+};
+
 /**
- * Validate that the IPC sender is a legitimate quickpreview renderer.
+ * Validate that the IPC sender is the bundled quickpreview renderer. Matching the
+ * full file path, not a suffix, keeps a remote page or a lookalike local file at
+ * .../src/quickpreview/renderer.html from using the bridge.
  */
 const validateSender = (event: IpcMainInvokeEvent) => {
-  const url = event.sender.getURL();
-  const pathname = new URL(url).pathname;
-  // Only allow requests from the quickpreview renderer.html
-  if (!pathname.endsWith('/src/quickpreview/renderer.html')) {
+  const senderURL = new URL(event.sender.getURL());
+  const senderPath = senderURL.protocol === 'file:' ? fileURLToPath(senderURL) : null;
+  const allowed =
+    senderPath &&
+    allowedRendererPaths.some(
+      (p) => normalizeForComparison(p) === normalizeForComparison(senderPath)
+    );
+  if (!allowed) {
     throw new Error('Invalid IPC sender: request not from quickpreview renderer');
   }
 };
@@ -135,10 +152,11 @@ export function registerQuickpreviewIPCHandlers(ipcMain: IpcMain) {
   ipcMain.handle('quickpreview:previewFileAsSnarkdownHTML', previewFileAsSnarkdownHTML);
   ipcMain.handle('quickpreview:finishWithData', finishWithData);
   ipcMain.handle('quickpreview:finishCapture', finishCapture);
-  ipcMain.handle('quickpreview:generateToken', (_, previewPath: string) => {
+  // Tokens are requested by the window opening the preview, not by the preview renderer.
+  handleFromMailspringWindows(ipcMain, 'quickpreview:generateToken', (_, previewPath: string) => {
     return generatePreviewToken(previewPath);
   });
-  ipcMain.handle('quickpreview:cleanupToken', (_, token: string) => {
+  handleFromMailspringWindows(ipcMain, 'quickpreview:cleanupToken', (_, token: string) => {
     cleanupPreviewToken(token);
   });
 }

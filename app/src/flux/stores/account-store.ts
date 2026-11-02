@@ -4,6 +4,7 @@ import _ from 'underscore';
 
 import MailspringStore from 'mailspring-store';
 import KeyManager from '../../key-manager';
+import { revokeOAuthGrant } from '../../oauth-revocation';
 import * as Actions from '../actions';
 import { Account } from '../models/account';
 import { Thread } from '../models/thread';
@@ -52,11 +53,13 @@ class _AccountStore extends MailspringStore {
         const newId = newAccountIds[0];
         Actions.focusDefaultMailboxPerspectiveForAccounts([newId], {
           sidebarAccountIds: accountIds,
+          keepSection: true,
         });
         const FolderSyncProgressStore = require('./folder-sync-progress-store').default;
         await FolderSyncProgressStore.whenCategoryListSynced(newId);
         Actions.focusDefaultMailboxPerspectiveForAccounts([newId], {
           sidebarAccountIds: accountIds,
+          keepSection: true,
         });
         // Uncollapse the inbox for the new account after the sidebar updates
         Actions.setCollapsedSidebarItem('Inbox', false);
@@ -179,11 +182,14 @@ class _AccountStore extends MailspringStore {
    * the AccountStore and runs `ensureK2Consistency`. This will actually
    * delete the Account on the local sync side.
    */
-  _onRemoveAccount = (id: string) => {
+  _onRemoveAccount = async (id: string) => {
     const account = this._accounts.find((a) => a.id === id);
     if (!account) return;
 
     this._caches = {};
+
+    // Started before anything below clears the keychain entry it needs to read.
+    const revocation = revokeOAuthGrant(account);
 
     const remainingAccounts = this._accounts.filter((a) => a !== account);
     // This action is called before saving because we need to unfocus the
@@ -191,7 +197,7 @@ class _AccountStore extends MailspringStore {
     // account, otherwise when we trigger with the new set of accounts, the
     // current perspective will still reference a stale accountId which will
     // cause things to break
-    Actions.focusDefaultMailboxPerspectiveForAccounts(remainingAccounts);
+    Actions.focusDefaultMailboxPerspectiveForAccounts(remainingAccounts, { keepSection: true });
     _.defer(() => {
       Actions.setCollapsedSidebarItem('Inbox', true);
     });
@@ -200,7 +206,11 @@ class _AccountStore extends MailspringStore {
     this._save();
 
     if (remainingAccounts.length === 0) {
-      // Clear everything and logout
+      // Clear everything and logout. application:reset-database destroys this window
+      // before relaunching, which would cancel an in-flight revocation request. It only
+      // deletes the database, so the secrets in config.json must be removed here.
+      await revocation;
+      await KeyManager.deleteAccountSecrets(account);
       const ipc = require('electron').ipcRenderer;
       ipc.send('command', 'application:reset-database', {});
     } else {
@@ -227,6 +237,7 @@ class _AccountStore extends MailspringStore {
     AppEnv.config.set(configСontainerFolderDefaultKey, this._containerFolderDefault);
   };
 
+  // Returns the stored account: an account reconnected under a new id keeps its existing one.
   addAccount = async (account: Account) => {
     if (!account.emailAddress || !account.provider || !(account instanceof Account)) {
       throw new Error(`Returned account data is invalid: ${JSON.stringify(account)}`);
@@ -242,18 +253,20 @@ class _AccountStore extends MailspringStore {
       (a) => a.id === cleanAccount.id || a.emailAddress === cleanAccount.emailAddress
     );
 
+    let stored = cleanAccount;
     if (existingIdx === -1) {
       this._accounts.push(cleanAccount);
     } else {
-      const existing = this._accounts[existingIdx];
-      existing.syncState = Account.SYNC_STATE_OK;
-      existing.name = cleanAccount.name;
-      existing.authedAt = cleanAccount.authedAt;
-      existing.emailAddress = cleanAccount.emailAddress;
-      existing.settings = cleanAccount.settings;
+      stored = this._accounts[existingIdx];
+      stored.syncState = Account.SYNC_STATE_OK;
+      stored.name = cleanAccount.name;
+      stored.authedAt = cleanAccount.authedAt;
+      stored.emailAddress = cleanAccount.emailAddress;
+      stored.settings = cleanAccount.settings;
     }
 
     this._save();
+    return stored;
   };
 
   _cachedGetter<T>(key: string, fn: () => T) {

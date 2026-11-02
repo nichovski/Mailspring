@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom';
 import moment from 'moment';
 import classnames from 'classnames';
 import { TabGroupContext } from 'mailspring-component-kit';
+import { DateUtils } from 'mailspring-exports';
 
 require('moment-round'); // overrides moment
 
@@ -10,7 +11,7 @@ const INTERVAL: [any, string] = [30, 'minutes'];
 
 type TimePickerProps = {
   value?: number;
-  onChange?: (...args: any[]) => any;
+  onChange?: (ms: number) => void;
   relativeTo?: number;
 };
 type TimePickerState = {
@@ -53,7 +54,7 @@ export default class TimePicker extends React.Component<TimePickerProps, TimePic
   }
 
   _valToTimeString(value) {
-    return moment(value).format('LT');
+    return moment(value).format(DateUtils.localeTimeFormat());
   }
 
   _onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -80,7 +81,7 @@ export default class TimePicker extends React.Component<TimePickerProps, TimePic
       return;
     }
     this._gotoScrollStartOnUpdate = true;
-    this.props.onChange(newT);
+    this.props.onChange(newT.valueOf());
   }
 
   _onFocus = () => {
@@ -106,14 +107,36 @@ export default class TimePicker extends React.Component<TimePickerProps, TimePic
   };
 
   _saveIfValid(rawText = '') {
+    // Compare the rendered text, not the parsed instant: re-parsing an ambiguous fall-back
+    // wall clock re-resolves it to the earlier offset.
+    if (rawText.trim() === this._valToTimeString(this.props.value)) {
+      return;
+    }
     // Locale-aware am/pm parsing!!
     const parsedMoment = moment(rawText, 'h:ma');
     if (parsedMoment.isValid()) {
       if (this._shouldAddTwelve(rawText) && parsedMoment.hour() < 12) {
-        parsedMoment.add(12, 'hours');
+        parsedMoment.hour(parsedMoment.hour() + 12);
       }
-      this.props.onChange(parsedMoment.valueOf());
+      // 'h:ma' has no date tokens, so moment fills y/m/d from today.
+      const valueMoment = moment(this.props.value);
+      parsedMoment.year(valueMoment.year());
+      parsedMoment.dayOfYear(valueMoment.dayOfYear());
+
+      if (parsedMoment.valueOf() !== this.props.value) {
+        this.props.onChange(parsedMoment.valueOf());
+        return;
+      }
     }
+    // Nothing was emitted, so props.value will not change and componentDidUpdate will not
+    // re-derive the text. Put the field back on the time it is meant to be showing.
+    this.setState({ rawText: this._valToTimeString(this.props.value) });
+  }
+
+  // moment's LT uses h for a 12-hour clock and H for a 24-hour one. Test the hour token rather
+  // than the meridiem: lb writes "H:mm [Auer]" and si writes "a h:mm".
+  _isTwelveHourLocale() {
+    return /h/.test(DateUtils.localeTimeFormat());
   }
 
   /*
@@ -122,10 +145,13 @@ export default class TimePicker extends React.Component<TimePickerProps, TimePic
    * (no meridiem indicators) and very basic use cases.
    */
   _shouldAddTwelve(rawText) {
+    if (!this._isTwelveHourLocale()) {
+      return false;
+    }
     const simpleDigitMatch = rawText.match(/^(\d{1,2})(:\d{1,2})?$/);
     if (simpleDigitMatch && simpleDigitMatch.length > 0) {
       const hr = parseInt(simpleDigitMatch[1], 10);
-      if (hr <= 7) {
+      if (hr >= 1 && hr <= 7) {
         return true;
       }
     }
@@ -188,7 +214,7 @@ export default class TimePicker extends React.Component<TimePickerProps, TimePic
 
       opts.push(
         <div className={className} key={val} onMouseDown={() => this._onSelectOption(val)}>
-          {timeIter.format('LT')}
+          {timeIter.format(DateUtils.localeTimeFormat())}
           {relTxt}
         </div>
       );

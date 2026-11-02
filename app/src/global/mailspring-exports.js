@@ -92,7 +92,7 @@ lazyLoadAndRegisterModel(`ProviderSyncbackRequest`, 'provider-syncback-request')
 // Search Query Interfaces
 lazyLoad(`SearchQueryAST`, 'services/search/search-query-ast');
 lazyLoad(`SearchQueryParser`, 'services/search/search-query-parser');
-lazyLoad(`IMAPSearchQueryBackend`, 'services/search/search-query-backend-imap');
+lazyLoad(`RemoteSearchQueryBackend`, 'services/search/search-query-backend-remote');
 
 // Tasks
 lazyLoad(`TaskFactory`, 'flux/tasks/task-factory');
@@ -157,6 +157,9 @@ load(`FocusedContactsStore`, 'flux/stores/focused-contacts-store');
 load(`FolderSyncProgressStore`, 'flux/stores/folder-sync-progress-store');
 load(`FocusedPerspectiveStore`, 'flux/stores/focused-perspective-store');
 load(`SearchableComponentStore`, 'flux/stores/searchable-component-store');
+lazyLoad(`LocalModelStore`, 'flux/stores/local-model-store');
+lazyLoad(`LocalModelPrompt`, 'flux/stores/local-model-prompt');
+lazyLoad(`LocalModelSummaries`, 'flux/stores/local-model-summaries');
 
 lazyLoad(`ServiceRegistry`, `registries/service-registry`);
 

@@ -19,6 +19,7 @@ import SoundRegistry from '../../registries/sound-registry';
 import * as ExtensionRegistry from '../../registries/extension-registry';
 import { localized } from '../../intl';
 import { DatabaseChangeRecord } from './database-change-record';
+import AttachmentStore from './attachment-store';
 
 interface IThreadMessageModelOrId {
   thread?: Thread;
@@ -142,6 +143,7 @@ class DraftStore extends MailspringStore {
             accountId: draft.accountId,
           })
         );
+        AttachmentStore.deleteFilesOwnedByDraft(draft.files);
       } else if (session.changes.isDirty()) {
         promises.push(session.changes.commit());
       }
@@ -538,7 +540,27 @@ class DraftStore extends MailspringStore {
 
     // move the draft to another account if necessary to match the from: field
     const accountIdBeforeEnsure = session.draft()?.accountId;
-    await session.ensureCorrectAccount();
+    try {
+      await session.ensureCorrectAccount();
+    } catch (err) {
+      // Clear the sending flag, or the composer treats the draft as mid-send and
+      // ignores every later click of Send.
+      this._draftsSending[headerMessageId] = false;
+      this.trigger({ headerMessageId });
+      if (!session.draft()) {
+        return this._onUnexpectedNotFoundDuringSend(headerMessageId, {
+          ...diagnostics,
+          failedAt: 'session.draft() was null in ensureCorrectAccount',
+        });
+      }
+      if (session.hasSendableFromAddress()) {
+        AppEnv.showErrorDialog(localized('Sorry, this message could not be sent. %@', err.message));
+        AppEnv.reportError(err, { headerMessageId });
+      } else {
+        AppEnv.showErrorDialog(DraftEditingSession.unsendableFromAddressMessage());
+      }
+      return;
+    }
     diagnostics.ensureCorrectAccountChangedAccount =
       session.draft()?.accountId !== accountIdBeforeEnsure;
     diagnostics.draftIdAfterEnsure = session.draft()?.id;
@@ -559,6 +581,8 @@ class DraftStore extends MailspringStore {
       return !(f.contentId && !draft.body.includes(`cid:${f.contentId}`));
     });
     if (files.length !== draft.files.length) {
+      // draftDeliverySucceeded only carries the files that are sent, so delete these now.
+      AttachmentStore.deleteFilesOwnedByDraft(draft.files.filter((f) => !files.includes(f)));
       session.changes.add({ files });
     }
 
@@ -579,11 +603,23 @@ class DraftStore extends MailspringStore {
       Message.attributes.body
     );
     if (!draft) {
+      // waitForPerformLocal() above resolves as soon as the SyncbackDraftTask's status
+      // leaves 'local' — including when the sync engine cancels it — which can happen
+      // before the draft row's own SQLite transaction has actually committed. Retry once
+      // after a short delay to absorb that race before reporting a real failure.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      draft = await DatabaseStore.findBy<Message>(Message, {
+        headerMessageId,
+        draft: true,
+      }).include(Message.attributes.body);
+      diagnostics.foundOnRetry = !!draft;
+    }
+    if (!draft) {
       this._draftsSending[headerMessageId] = false;
       this.trigger({ headerMessageId });
       return this._onUnexpectedNotFoundDuringSend(headerMessageId, {
         ...diagnostics,
-        failedAt: 'DatabaseStore.findBy returned null after commit',
+        failedAt: 'DatabaseStore.findBy returned null after commit (and retry)',
       });
     }
 

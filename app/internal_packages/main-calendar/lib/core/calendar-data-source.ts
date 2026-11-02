@@ -9,9 +9,10 @@ import {
   ICSEventHelpers,
   AndCompositeMatcher,
   OrCompositeMatcher,
-  Contact,
+  AccountStore,
+  Calendar,
+  Utils,
 } from 'mailspring-exports';
-import IcalExpander from 'ical-expander';
 
 /** Participation status values from iCalendar spec */
 export type ParticipationStatus = 'NEEDS-ACTION' | 'ACCEPTED' | 'DECLINED' | 'TENTATIVE' | string;
@@ -78,6 +79,24 @@ export function occurrenceEndUnix(e: EventOccurrence): number {
   return isTimed(e) ? e.end : CalendarDateUtils.nextDayStartUnix(e.endDate);
 }
 
+/** Where its series' rule puts an occurrence, which moving that occurrence alone doesn't change. */
+export function occurrenceSlot(e: EventOccurrence): number {
+  return e.recurrenceIdStart ?? occurrenceStartUnix(e);
+}
+
+export function occurrenceTimes(e: EventOccurrence) {
+  return { start: occurrenceStartUnix(e), end: occurrenceEndUnix(e), isAllDay: !isTimed(e) };
+}
+
+/** The occurrence at other times; an all-day one carries only the dates it covers. */
+export function occurrenceAt(
+  occurrence: EventOccurrence,
+  { start, end, isAllDay }: ReturnType<typeof occurrenceTimes>
+): EventOccurrence {
+  const moved = { ...occurrence, ...coveredDates(start, end, isAllDay) };
+  return isAllDay ? { ...moved, isAllDay: true } : { ...moved, isAllDay: false, start, end };
+}
+
 /**
  * The dates an event covers, inclusive, from its start and exclusive end instants.
  *
@@ -116,8 +135,8 @@ interface OccurrenceBase {
   /**
    * The days covered, inclusive both ends — a one-day event has `startDate === endDate`.
    *
-   * The authoritative span for all-day events, and what the day-cell filters read per event
-   * per cell via eventCoversDate.
+   * The authoritative span for all-day events, and what month rows (layoutWeekBars) and agenda
+   * days (eventCoversDate) place events by.
    */
   startDate: CalendarDate;
   endDate: CalendarDate;
@@ -135,6 +154,14 @@ interface OccurrenceBase {
    * - Events where the current user is an attendee but hasn't accepted (NEEDS-ACTION or TENTATIVE)
    */
   isPending: boolean;
+  /**
+   * True when this account organizes the event, or nobody does, or its ORGANIZER is the address
+   * of the calendar it sits on and the server says that calendar is ours (Google writes a
+   * secondary calendar's own id as ORGANIZER). Governs who may reschedule it.
+   */
+  isMine: boolean;
+  /** TRANSP:TRANSPARENT on this occurrence's own VEVENT: it does not block time. */
+  isFree?: boolean;
   isException: boolean;
   /**
    * For exception occurrences only: the Unix timestamp (seconds) of the **original**
@@ -176,6 +203,31 @@ export type EventOccurrence = AllDayOccurrence | TimedOccurrence;
  */
 export type FocusedEventInfo = { id: string; start: number };
 
+/**
+ * The address in a calendar's collection path, which on Google is the calendar's own id
+ * (`/caldav/v2/c_1a2b%40group.calendar.google.com/events/`); '' when the path carries none.
+ */
+export function calendarAddress(calendar: Calendar): string {
+  const segments = (calendar.path || '').split('/').map((segment) => {
+    try {
+      return decodeURIComponent(segment);
+    } catch (e) {
+      return segment;
+    }
+  });
+  return segments.filter((segment) => segment.includes('@')).pop() || '';
+}
+
+/**
+ * Calendar id to its own address, for the calendars the server (DAV:owner) says are this
+ * account's; a nameless default is not. A meeting such a calendar organizes is ours.
+ */
+export function ownCalendarAddresses(calendars: Calendar[]): Map<string, string> {
+  return new Map(
+    calendars.filter((c) => c.ownership === 'mine').map((c) => [c.id, calendarAddress(c)])
+  );
+}
+
 /** Strip mailto: prefix from email addresses (common in iCalendar data) */
 function normalizeEmail(email: string): string {
   return email.replace(/^mailto:/i, '');
@@ -185,16 +237,8 @@ export class CalendarDataSource {
   observable: Rx.Observable<{ events: EventOccurrence[] }>;
 
   buildObservable({ startUnix, endUnix, disabledCalendars }) {
-    const end = Event.attributes.recurrenceEnd;
-    const start = Event.attributes.recurrenceStart;
-
     // Query all events (masters and exceptions) that fall in the date range
-    const dateMatcher = new Matcher.Or([
-      new Matcher.And([start.lte(endUnix), end.gte(startUnix)]),
-      new Matcher.And([start.lte(endUnix), start.gte(startUnix)]),
-      new Matcher.And([end.gte(startUnix), end.lte(endUnix)]),
-      new Matcher.And([end.gte(endUnix), start.lte(startUnix)]),
-    ]);
+    const dateMatcher = CalendarUtils.eventsInRangeMatcher(startUnix, endUnix);
 
     let matcher: AndCompositeMatcher | OrCompositeMatcher = dateMatcher;
 
@@ -203,14 +247,68 @@ export class CalendarDataSource {
     }
 
     const query = DatabaseStore.findAll<Event>(Event).where(matcher);
-    this.observable = Rx.Observable.fromQuery(query).flatMapLatest((results) =>
-      Rx.Observable.from([{ events: occurrencesForEvents(results, { startUnix, endUnix }) }])
+    // Google rewrites ORGANIZER on a secondary calendar to the calendar's own id, so a meeting
+    // organized by the calendar it sits on is ours when the calendar is.
+    const calendars = Rx.Observable.fromQuery(DatabaseStore.findAll<Calendar>(Calendar));
+    this.observable = Rx.Observable.combineLatest(
+      Rx.Observable.fromQuery(query),
+      calendars,
+      (results: Event[], cals: Calendar[]) => ({
+        events: occurrencesForEvents(results, {
+          startUnix,
+          endUnix,
+          ownCalendarAddresses: ownCalendarAddresses(cals),
+        }),
+      })
     );
     return this.observable;
   }
 
   subscribe(callback) {
     return this.observable.subscribe(callback);
+  }
+}
+
+/**
+ * One events query for the dates a view draws, reaching `marginDays` further each side. It
+ * requeries only once the drawn dates leave what it covers, or the hidden calendars change.
+ */
+export class EventRangeSubscription {
+  private covered?: { first: CalendarDate; end: CalendarDate; disabledCalendars: string[] };
+  private subscription?: Rx.IDisposable;
+
+  constructor(
+    private dataSource: Pick<CalendarDataSource, 'buildObservable'>,
+    private marginDays: number,
+    private onEvents: (events: EventOccurrence[]) => void
+  ) {}
+
+  cover(drawn: { first: CalendarDate; end: CalendarDate }, disabledCalendars: string[]) {
+    const covered = this.covered;
+    if (
+      covered &&
+      covered.disabledCalendars === disabledCalendars &&
+      covered.first <= drawn.first &&
+      drawn.end <= covered.end
+    ) {
+      return;
+    }
+    const first = CalendarDateUtils.addCalendarDays(drawn.first, -this.marginDays);
+    const end = CalendarDateUtils.addCalendarDays(drawn.end, this.marginDays);
+    this.covered = { first, end, disabledCalendars };
+
+    this.subscription?.dispose();
+    this.subscription = this.dataSource
+      .buildObservable({
+        disabledCalendars,
+        startUnix: CalendarDateUtils.dayStartUnix(first),
+        endUnix: CalendarDateUtils.dayStartUnix(end) - 1,
+      })
+      .subscribe(({ events }) => this.onEvents(events));
+  }
+
+  dispose() {
+    this.subscription?.dispose();
   }
 }
 
@@ -227,8 +325,9 @@ function occurrenceFromICS(args: {
   isRecurring: boolean;
   /** Defaults to whether the component carries a RECURRENCE-ID */
   isException?: boolean;
+  ownCalendarAddresses: Map<string, string>;
 }): EventOccurrence {
-  const { id, event, item, startTime, endTime } = args;
+  const { id, event, item, startTime, endTime, ownCalendarAddresses } = args;
   const startUnix = startTime.toJSDate().getTime() / 1000;
   const endUnix = endTime.toJSDate().getTime() / 1000;
 
@@ -241,10 +340,26 @@ function occurrenceFromICS(args: {
     partstat: (a.getFirstParameter('partstat') || 'NEEDS-ACTION') as ParticipationStatus,
   }));
 
+  // "Me" is the account this event belongs to, not any connected account: an invitation from
+  // another of our accounts is still somebody else's meeting here.
+  const isThisAccount = (email: string) => {
+    const account = AccountStore.accountForEmail(email);
+    return !!account && account.id === event.accountId;
+  };
+
   // Pending styling also covers an event I'm invited to but haven't answered
-  const myAttendee = attendees.find((a) => a.email && new Contact({ email: a.email }).isMe());
+  const myAttendee = attendees.find((a) => a.email && isThisAccount(a.email));
   const myPartstat = myAttendee?.partstat?.toUpperCase();
   const isAwaitingMyResponse = myAttendee && myPartstat !== 'ACCEPTED' && myPartstat !== 'DECLINED';
+
+  const organizerEmail = item.organizer
+    ? normalizeEmail(CalendarUtils.emailFromParticipantURI(String(item.organizer)) || '')
+    : '';
+  const calendarOwnAddress = ownCalendarAddresses.get(event.calendarId);
+  const iAmOrganizer =
+    !!organizerEmail &&
+    (isThisAccount(organizerEmail) ||
+      (!!calendarOwnAddress && Utils.emailIsEquivalent(organizerEmail, calendarOwnAddress)));
 
   const isAllDay = !!startTime.isDate;
   const startDate = isAllDay
@@ -268,10 +383,12 @@ function occurrenceFromICS(args: {
     endDate,
     isCancelled: status === 'CANCELLED',
     isPending: status === 'TENTATIVE' || !!isAwaitingMyResponse,
+    isMine: !organizerEmail || iAmOrganizer,
+    isFree: item.component?.getFirstPropertyValue('transp') === 'TRANSPARENT',
     isException: args.isException ?? !!rid,
     recurrenceIdStart: rid ? (rid as any).toJSDate().getTime() / 1000 : undefined,
     isRecurring: args.isRecurring,
-    organizer: item.organizer ? { email: item.organizer } : null,
+    organizer: organizerEmail ? { email: organizerEmail } : null,
     attendees,
   };
 
@@ -280,9 +397,29 @@ function occurrenceFromICS(args: {
     : { ...base, isAllDay: false, start: startUnix, end: endUnix };
 }
 
+/**
+ * The VEVENT an exception row stands for. The engine stores the whole calendar resource on every
+ * row it holds, master included, so it is the one whose RECURRENCE-ID the row names; a resource
+ * holding the exception alone has only that one.
+ */
+function exceptionICSEvent(exception: Event): ICALEvent {
+  const { root, event } = CalendarUtils.parseICSString(exception.ics);
+  const own = root.getAllSubcomponents('vevent').find((vevent) => {
+    const rid = vevent.getFirstPropertyValue('recurrence-id') as ICALTime | null;
+    return rid && rid.toICALString() === exception.recurrenceId;
+  });
+  if (!own) return event;
+  const ICAL: ICAL = require('ical.js');
+  return new ICAL.Event(own);
+}
+
 export function occurrencesForEvents(
   results: Event[],
-  { startUnix, endUnix }: { startUnix: number; endUnix: number }
+  {
+    startUnix,
+    endUnix,
+    ownCalendarAddresses = new Map<string, string>(),
+  }: { startUnix: number; endUnix: number; ownCalendarAddresses?: Map<string, string> }
 ) {
   const occurrences: EventOccurrence[] = [];
 
@@ -313,23 +450,18 @@ export function occurrencesForEvents(
         // 100, which is not a limit on work but on how far back a series may begin: a
         // weekly meeting older than about two years never reached the present, so it
         // expanded to nothing and vanished from the calendar entirely.
-        const icalExpander = new IcalExpander({
-          ics: master.ics,
-          maxIterations: ICSEventHelpers.expansionIterationBudget(
-            master.ics,
-            master.recurrenceStart,
-            endUnix
-          ),
-        });
-        const expanded = icalExpander.between(new Date(startUnix * 1000), new Date(endUnix * 1000));
+        const expanded = ICSEventHelpers.expandBetween(
+          master.ics,
+          master.recurrenceStart,
+          startUnix,
+          endUnix
+        );
 
         const masterIsRecurring = ICSEventHelpers.isRecurringEvent(master.ics);
 
-        [...expanded.events, ...expanded.occurrences].forEach((e) => {
+        expanded.forEach((e) => {
           const start = e.startDate.toJSDate().getTime() / 1000;
-          const end = e.endDate.toJSDate().getTime() / 1000;
-          // For occurrences, the actual event data is in e.item; for events, e is the event itself
-          const item = 'item' in e ? e.item : e;
+          const item = ICSEventHelpers.expandedEvent(e);
           expandedStartTimes.add(start);
 
           occurrences.push(
@@ -337,11 +469,12 @@ export function occurrencesForEvents(
               // Key on the occurrence start, not the expansion index: idx depends on the query
               // range, so the same occurrence got a different id per view — breaking selection
               // (and React keys) when switching views. The start is stable across ranges.
-              id: `${master.id}-e${Math.round(start)}`,
+              id: CalendarUtils.occurrenceId(master.id, start),
               event: master,
               item,
               startTime: e.startDate,
               endTime: e.endDate,
+              ownCalendarAddresses,
               isRecurring: masterIsRecurring,
             })
           );
@@ -374,6 +507,7 @@ export function occurrencesForEvents(
             endDate,
             isCancelled: false,
             isPending: false,
+            isMine: true,
             isException: false,
             isRecurring: false,
             organizer: null,
@@ -393,21 +527,17 @@ export function occurrencesForEvents(
       }
     }
 
-    // Handle standalone exceptions (separate database records)
-    // Only add if their start time wasn't already covered by master expansion
+    // Standalone exception rows, unless the master's expansion already drew them. The start
+    // compared is the row's own VEVENT read here, not its recurrenceStart column: the sync engine
+    // computes that column, and it need not read a zoned time to the same second.
     for (const exception of exceptions) {
-      const start = exception.recurrenceStart;
-      if (expandedStartTimes.has(start)) {
-        // Already covered by master expansion, skip to avoid duplicates
-        continue;
-      }
-
-      // Exception events are single-instance (no RRULE), so parse directly
-      // with ICAL.js instead of using ical-expander (which is for recurrence expansion)
       try {
-        const { event: icsEvent } = CalendarUtils.parseICSString(exception.ics);
+        const icsEvent = exceptionICSEvent(exception);
         const occStart = icsEvent.startDate.toJSDate().getTime() / 1000;
         const occEnd = icsEvent.endDate.toJSDate().getTime() / 1000;
+        if (expandedStartTimes.has(occStart)) {
+          continue;
+        }
 
         // Skip if outside the visible range
         if (occEnd < startUnix || occStart > endUnix) {
@@ -423,6 +553,7 @@ export function occurrencesForEvents(
             endTime: icsEvent.endDate,
             isRecurring: true, // exceptions only exist for a series
             isException: true,
+            ownCalendarAddresses,
           })
         );
       } catch (err) {
@@ -432,4 +563,72 @@ export function occurrencesForEvents(
   }
 
   return occurrences;
+}
+
+const UPCOMING_LOOKAHEAD_SECONDS = 366 * 86400;
+
+/**
+ * The occurrence of a series that `recurrenceIdStart` names. A moved occurrence is no longer
+ * at that instant, so its own VEVENT is read for where it went.
+ */
+export function occurrenceForRecurrenceId(
+  events: Event[],
+  recurrenceIdStart: number
+): EventOccurrence | undefined {
+  const unix = (time: ICALTime) => time.toJSDate().getTime() / 1000;
+  const master = events.find((e) => !e.recurrenceId) || events[0];
+  let start = recurrenceIdStart;
+  try {
+    for (const vevent of CalendarUtils.parseICSString(master.ics).root.getAllSubcomponents(
+      'vevent'
+    )) {
+      const rid = vevent.getFirstPropertyValue('recurrence-id') as ICALTime | null;
+      if (rid && unix(rid) === recurrenceIdStart) {
+        start = unix(vevent.getFirstPropertyValue('dtstart') as ICALTime);
+      }
+    }
+  } catch (err) {
+    // No rows, or a calendar object that won't parse. occurrencesForEvents handles both.
+  }
+  return occurrencesForEvents(events, { startUnix: start, endUnix: start + 86400 }).find(
+    (o) => occurrenceSlot(o) === recurrenceIdStart
+  );
+}
+
+/**
+ * The occurrence to focus for an event opened from outside the calendar: the one
+ * `recurrenceIdStart` names when the request is about a single occurrence of a series,
+ * otherwise the next one from `nowUnix`, or the event's first when none is upcoming.
+ *
+ * @param events - Every Event row sharing one UID, so a series' exceptions are placed.
+ */
+export function focusedEventInfoForEvents(
+  events: Event[],
+  nowUnix: number,
+  recurrenceIdStart?: number
+): FocusedEventInfo | null {
+  const byStart = (a: EventOccurrence, b: EventOccurrence) =>
+    occurrenceStartUnix(a) - occurrenceStartUnix(b);
+
+  let occurrence =
+    recurrenceIdStart !== undefined
+      ? occurrenceForRecurrenceId(events, recurrenceIdStart)
+      : undefined;
+
+  if (!occurrence) {
+    [occurrence] = occurrencesForEvents(events, {
+      startUnix: nowUnix,
+      endUnix: nowUnix + UPCOMING_LOOKAHEAD_SECONDS,
+    }).sort(byStart);
+  }
+
+  if (!occurrence) {
+    const firstStart = Math.min(...events.map((e) => e.recurrenceStart));
+    [occurrence] = occurrencesForEvents(events, {
+      startUnix: firstStart,
+      endUnix: firstStart + 86400,
+    });
+  }
+
+  return occurrence ? { id: occurrence.id, start: occurrenceStartUnix(occurrence) } : null;
 }

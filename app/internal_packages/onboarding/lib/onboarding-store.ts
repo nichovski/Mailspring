@@ -1,5 +1,6 @@
 import {
   localized,
+  Actions,
   AccountStore,
   Account,
   IdentityStore,
@@ -9,10 +10,14 @@ import { ipcRenderer } from 'electron';
 import MailspringStore from 'mailspring-store';
 
 import * as OnboardingActions from './onboarding-actions';
+import { RejectedCertificate } from './certificate-review';
 
 class OnboardingStore extends MailspringStore {
   _account: Account;
   _pageStack: string[];
+  // Cleared by any later setAccount, such as submitting the form or going back.
+  _confirmServers = false;
+  _rejectedCertificates: RejectedCertificate[] = [];
 
   constructor() {
     super();
@@ -103,11 +108,19 @@ class OnboardingStore extends MailspringStore {
     this._onMoveToPage(nextPage);
   };
 
-  _onSetAccount = (acct: Account) => {
+  _onSetAccount = (
+    acct: Account,
+    {
+      confirmServers = false,
+      rejectedCertificates = [],
+    }: { confirmServers?: boolean; rejectedCertificates?: RejectedCertificate[] } = {}
+  ) => {
     if (!(acct instanceof Account)) {
       throw new Error('OnboardingActions.setAccount expects an Account instance.');
     }
     this._account = acct;
+    this._confirmServers = confirmServers;
+    this._rejectedCertificates = rejectedCertificates;
     this.trigger();
   };
 
@@ -147,9 +160,17 @@ class OnboardingStore extends MailspringStore {
 
   _onFinishAndAddAccount = async (account: Account) => {
     const isFirstAccount = AccountStore.accounts().length === 0;
+    // Matched the way addAccount matches the account it updates.
+    const isReconnect = AccountStore.accounts().some(
+      (a) => a.id === account.id || a.emailAddress === account.emailAddress
+    );
 
     try {
-      AccountStore.addAccount(account);
+      const stored = await AccountStore.addAccount(account);
+      if (isReconnect) {
+        // The account's sync process is still running with its old settings.
+        Actions.restartAccountSync(stored);
+      }
     } catch (e) {
       AppEnv.reportError(e);
       AppEnv.showErrorDialog({
@@ -184,6 +205,14 @@ class OnboardingStore extends MailspringStore {
 
   account() {
     return this._account;
+  }
+
+  confirmServers() {
+    return this._confirmServers;
+  }
+
+  rejectedCertificates() {
+    return this._rejectedCertificates;
   }
 }
 

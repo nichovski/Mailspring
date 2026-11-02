@@ -7,10 +7,15 @@ import {
   UnreadStatusQueryExpression,
   StarredStatusQueryExpression,
   HasAttachmentQueryExpression,
+  InQueryExpression,
   MatchQueryExpression,
   QueryExpression,
 } from './search-query-ast';
 import { DateUtils } from 'mailspring-exports';
+import { imapUtf7 } from '../../utils/imap-utf7';
+
+// Category.displayName drops one of these and the delimiter after it.
+const DISPLAY_NAME_PREFIXES = ['INBOX', '[Gmail]', '[Mailspring]', 'Mailspring'];
 
 /*
  * This class visits a match-compatible subtree and condenses it into a single
@@ -28,11 +33,27 @@ class MatchQueryExpressionVisitor extends SearchQueryExpressionVisitor {
     }
   }
 
+  // The parser builds right-nested binary trees, and FTS5's parser overflows its stack on
+  // deeply nested parentheses (about 40 levels), so chains of the same operator are emitted
+  // flat: `(a OR b OR c)` rather than `(a OR (b OR c))`.
+  _operands(node, type) {
+    const out = [];
+    const stack = [node];
+    while (stack.length) {
+      const n = stack.pop();
+      if (n instanceof type) {
+        stack.push(n.e2, n.e1);
+      } else {
+        out.push(n);
+      }
+    }
+    return out;
+  }
+
   visitAnd(node) {
     this._assertIsMatchCompatible(node);
-    const lhs = this.visitAndGetResult(node.e1);
-    const rhs = this.visitAndGetResult(node.e2);
-    this._result = `(${lhs} AND ${rhs})`;
+    const parts = this._operands(node, AndQueryExpression).map((n) => this.visitAndGetResult(n));
+    this._result = `(${parts.join(' AND ')})`;
   }
 
   visitNot(node) {
@@ -43,9 +64,8 @@ class MatchQueryExpressionVisitor extends SearchQueryExpressionVisitor {
   }
 
   visitOr(node) {
-    const lhs = this.visitAndGetResult(node.e1);
-    const rhs = this.visitAndGetResult(node.e2);
-    this._result = `(${lhs} OR ${rhs})`;
+    const parts = this._operands(node, OrQueryExpression).map((n) => this.visitAndGetResult(n));
+    this._result = `(${parts.join(' OR ')})`;
   }
 
   visitDate(node) {}
@@ -88,8 +108,7 @@ class MatchQueryExpressionVisitor extends SearchQueryExpressionVisitor {
   }
 
   visitIn(node) {
-    const text = this.visitAndGetResult(node.text);
-    this._result = `(categories : "${text}"*)`;
+    this._assertIsMatchCompatible(node);
   }
 
   visitHasAttachment(node) {
@@ -161,7 +180,7 @@ class MatchCompatibleQueryCondenser extends SearchQueryExpressionVisitor {
   }
 
   visitIn(node) {
-    this._result = this._matchVisitor.visit(node);
+    this._result = new InQueryExpression(node.text);
   }
 
   visitUnread(node) {
@@ -236,8 +255,25 @@ class StructuredSearchQueryVisitor extends SearchQueryExpressionVisitor {
     throw new Error(`Unreachable: ${node}`);
   }
 
+  // `in:` names a folder or label by role, by full path as the search bar writes it
+  // (thread-search-bar.tsx), or by the name the sidebar and `in:` suggestions show
+  // (Category.displayName), case-insensitively.
   visitIn(node) {
-    throw new Error(`Unreachable: ${node}`);
+    const name: string = node.text.token.s;
+    const quote = (s: string) => `'${s.replace(/'/g, "''")}'`;
+    const likeEscape = (s: string) => s.replace(/[\\%_]/g, '\\$&');
+
+    const pathMatches = [...new Set([name, imapUtf7.encode(name)])].flatMap((path) => [
+      `\`path\` = ${quote(path)} COLLATE NOCASE`,
+      ...DISPLAY_NAME_PREFIXES.map(
+        (prefix) =>
+          `\`path\` LIKE ${quote(`${likeEscape(prefix)}_${likeEscape(path)}`)} ESCAPE '\\'`
+      ),
+    ]);
+    const where = [`\`role\` = ${quote(name)} COLLATE NOCASE`, ...pathMatches].join(' OR ');
+    const named = (table: string) => `SELECT \`id\` FROM \`${table}\` WHERE ${where}`;
+    const categoryIds = `${named('Folder')} UNION ${named('Label')}`;
+    this._result = `(\`${this._className}\`.\`id\` IN (SELECT \`id\` FROM \`${this._className}Category\` WHERE \`value\` IN (${categoryIds})))`;
   }
 
   visitUnread(node) {

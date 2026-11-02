@@ -8,12 +8,13 @@ import * as OnboardingActions from '../onboarding-actions';
 import { finalizeAndValidateAccount } from '../onboarding-helpers';
 import FormErrorMessage from '../form-error-message';
 import AccountProviders from '../account-providers';
+import { forgetCertificateIfServerChanged } from '../certificate-review';
 
 let didWarnAboutGmailIMAP = false;
 
 const CreatePageForForm = (FormComponent: React.ComponentType<any> & Record<string, any>) => {
   return class Composed extends React.Component<
-    { account: Account },
+    { account: Account; confirmServers?: boolean },
     {
       account: Account;
       submitting?: boolean;
@@ -92,6 +93,9 @@ const CreatePageForForm = (FormComponent: React.ComponentType<any> & Record<stri
 
       if (event.target.id.includes('.')) {
         const [parent, key] = event.target.id.split('.');
+        if (parent === 'settings' && next.settings[key] !== val) {
+          forgetCertificateIfServerChanged(next, key);
+        }
         next[parent][key] = val;
       } else {
         next[event.target.id] = val;
@@ -170,11 +174,24 @@ const CreatePageForForm = (FormComponent: React.ComponentType<any> & Record<stri
           OnboardingActions.finishAndAddAccount(validated);
         })
         .catch((err) => {
+          const isBasicForm = FormComponent.displayName === 'AccountBasicSettingsForm';
+          // No credentials have gone to a server whose certificate was rejected. The user
+          // reviews the certificates, and accepting them retries with their fingerprints.
+          if (err.certificates?.length) {
+            this.setState({ submitting: false });
+            OnboardingActions.setAccount(account, { rejectedCertificates: err.certificates });
+            // From the template-based form, Back leads to the full settings, where a wrong
+            // guessed host or username can be corrected if connecting still fails.
+            if (account.provider === 'imap' && isBasicForm) {
+              OnboardingActions.moveToPage('account-settings-imap');
+            }
+            OnboardingActions.moveToPage('account-certificate');
+            return;
+          }
           // If we're connecting from the `basic` settings page with an IMAP account,
           // the settings are from a template. If authentication fails, move the user
           // to the full settings since our guesses may have been wrong.
           // TODO: Potentially show Authentication Errors on this simple screen?
-          const isBasicForm = FormComponent.displayName === 'AccountBasicSettingsForm';
           if (account.provider === 'imap' && isBasicForm) {
             // Advice means a rejected TLS handshake, which "Allow insecure SSL" fixes.
             // Both services, since an IMAP failure short-circuits before SMTP is tested.
@@ -264,12 +281,10 @@ const CreatePageForForm = (FormComponent: React.ComponentType<any> & Record<stri
       let articleURL;
       if (account.emailAddress.includes('@yahoo.com')) {
         message = localized('Have you enabled access through Yahoo?');
-        articleURL =
-          'http://support.getmailspring.com//hc/en-us/articles/115001882372-Authorizing-Use-with-Yahoo';
+        articleURL = 'https://getmailspring.com/docs/adding-a-yahoo-account';
       } else {
         message = localized('Some providers require an app password.');
-        articleURL =
-          'http://support.getmailspring.com/hc/en-us/articles/115001876051-App-Passwords';
+        articleURL = 'https://getmailspring.com/docs/two-factor-authentication-app-passwords';
       }
       // We don't use a FormErrorMessage component because the content
       // we need to display has HTML.
@@ -298,6 +313,10 @@ const CreatePageForForm = (FormComponent: React.ComponentType<any> & Record<stri
       }
 
       const hideTitle = errorMessage && errorMessage.length > 120;
+      const warning = FormComponent.warningLabel?.({
+        account,
+        confirmServers: this.props.confirmServers,
+      });
 
       return (
         <div className={`page account-setup ${FormComponent.displayName}`}>
@@ -314,11 +333,16 @@ const CreatePageForForm = (FormComponent: React.ComponentType<any> & Record<stri
           ) : (
             <h2>{FormComponent.titleLabel(providerConfig)}</h2>
           )}
-          <FormErrorMessage
-            log={errorLog}
-            message={errorMessage}
-            empty={FormComponent.subtitleLabel(providerConfig)}
-          />
+          {warning && !errorMessage ? (
+            // Not a FormErrorMessage, which would turn the hostnames in the warning into links.
+            <div className="message error">{warning}</div>
+          ) : (
+            <FormErrorMessage
+              log={errorLog}
+              message={errorMessage}
+              empty={FormComponent.subtitleLabel(providerConfig)}
+            />
+          )}
           {this._renderCredentialsNote()}
           <FormComponent
             ref={(el) => {

@@ -57,8 +57,9 @@ export const ProviderSyncbackRequest: ProviderSyncbackRequest;
 export type SearchQueryAST = typeof import('../services/search/search-query-ast');
 export const SearchQueryAST: SearchQueryAST;
 export * from '../services/search/search-query-parser';
-export type IMAPSearchQueryBackend = import('../services/search/search-query-backend-imap').default;
-export const IMAPSearchQueryBackend: IMAPSearchQueryBackend;
+export type RemoteSearchQueryBackend =
+  typeof import('../services/search/search-query-backend-remote').default;
+export const RemoteSearchQueryBackend: RemoteSearchQueryBackend;
 
 // Tasks
 export * from '../flux/tasks/task';
@@ -148,6 +149,19 @@ export const FocusedPerspectiveStore: FocusedPerspectiveStore;
 export type SearchableComponentStore =
   typeof import('../flux/stores/searchable-component-store').default;
 export const SearchableComponentStore: SearchableComponentStore;
+export type LocalModelStore = typeof import('../flux/stores/local-model-store').default;
+export const LocalModelStore: LocalModelStore;
+export type {
+  LocalAIAnswer,
+  LocalAIRequest,
+  LocalAIStatus,
+  LocalModelProvider,
+  LocalModelState,
+  LocalModelStatus,
+} from '../flux/stores/local-model-store';
+export const LocalModelPrompt: typeof import('../flux/stores/local-model-prompt');
+export const LocalModelSummaries: typeof import('../flux/stores/local-model-summaries');
+export type { MessageSummary, SummaryInput } from '../flux/stores/local-model-summaries';
 
 export type ServiceRegistry = typeof import('../registries/service-registry').default;
 export const ServiceRegistry: ServiceRegistry;
@@ -200,7 +214,9 @@ export { CalendarDate } from '../calendar-date';
 export type ICSEventHelpers = typeof import('../ics-event-helpers');
 export const ICSEventHelpers: ICSEventHelpers;
 export {
+  CalendarConflict,
   CreateEventOptions,
+  Occurrence,
   UpdateTimesOptions,
   RecurrenceExceptionResult,
   RecurrenceInfo,

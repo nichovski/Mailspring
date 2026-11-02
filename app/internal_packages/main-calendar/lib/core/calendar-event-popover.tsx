@@ -1,4 +1,4 @@
-import moment, { Moment } from 'moment';
+import moment from 'moment';
 import React from 'react';
 import {
   Actions,
@@ -13,6 +13,7 @@ import {
   CalendarUtils,
   SyncbackEventTask,
   CalendarDateUtils,
+  Utils,
 } from 'mailspring-exports';
 import {
   DatePicker,
@@ -25,63 +26,38 @@ import { EventAttendeesInput } from './event-attendees-input';
 import {
   EventOccurrence,
   EventAttendee,
+  occurrenceSlot,
   occurrenceStartUnix,
   occurrenceEndUnix,
 } from './calendar-data-source';
+import { canRespondToEvent, openProposeNewTimePopover } from './calendar-rsvp';
 import { EventPropertyRow } from './event-property-row';
 import {
   createCalendarEvent,
+  organizerForAccount,
   inclusiveAllDayEnd,
   shiftEndWithStart,
   clampEnd,
+  extractNotesFromDescription,
+  formatTime,
+  NewEventDraft,
 } from './calendar-helpers';
+import { AttendeeStatusIcon, attendeeStatusClass, sortAttendeesByStatus } from './attendee-status';
 // CalendarColorPicker import removed - disabled until custom event colors are fully supported
 import { CalendarSelector } from './calendar-selector';
 import { LocationVideoInput } from './location-video-input';
 import { AllDayToggle } from './all-day-toggle';
-import { RepeatSelector, RepeatOption } from './repeat-selector';
+import {
+  RepeatSelector,
+  RepeatOption,
+  frequencyToRepeatOption,
+  repeatOptionToRRule,
+} from './repeat-selector';
 import { AlertSelector, AlertTiming } from './alert-selector';
-import { ShowAsSelector, ShowAsOption } from './show-as-selector';
+import { ShowAsSelector, ShowAsOption, defaultShowAs } from './show-as-selector';
 import { EventPopoverActions } from './event-popover-actions';
 import { TimeZoneSelector } from './timezone-selector';
-import { parseEventIdFromOccurrence } from './calendar-drag-utils';
 import { showRecurringEventDialog } from './recurring-event-dialog';
-
-/**
- * Convert a RepeatOption UI value to an RRULE string (or null for 'none').
- */
-function repeatOptionToRRule(option: RepeatOption): string | null {
-  switch (option) {
-    case 'daily':
-      return 'FREQ=DAILY';
-    case 'weekly':
-      return 'FREQ=WEEKLY';
-    case 'monthly':
-      return 'FREQ=MONTHLY';
-    case 'yearly':
-      return 'FREQ=YEARLY';
-    default:
-      return null;
-  }
-}
-
-/**
- * Convert an ICS recurrence frequency string to a RepeatOption UI value.
- */
-function frequencyToRepeatOption(frequency: string | undefined): RepeatOption {
-  switch (frequency?.toUpperCase()) {
-    case 'DAILY':
-      return 'daily';
-    case 'WEEKLY':
-      return 'weekly';
-    case 'MONTHLY':
-      return 'monthly';
-    case 'YEARLY':
-      return 'yearly';
-    default:
-      return 'none';
-  }
-}
 
 interface CalendarEventPopoverProps {
   event: EventOccurrence;
@@ -95,6 +71,9 @@ interface CalendarEventPopoverProps {
   disabledCalendars?: string[];
   /** Whether the calendar containing this event is read-only */
   isCalendarReadOnly?: boolean;
+  /** Receives the event as the editor would now save it, whenever a field the grid draws changes. */
+  onDraftChange?: (draft: NewEventDraft) => void;
+  onClosed?: () => void;
 }
 
 interface CalendarEventPopoverState {
@@ -108,8 +87,16 @@ interface CalendarEventPopoverState {
   // New fields for enhanced editing
   allDay: boolean;
   repeat: RepeatOption;
+  /** The repeat value the event arrived with, so a save can tell whether the user changed it. */
+  originalRepeat: RepeatOption;
+  /** The zone the event arrived with; a series is rezoned only when the user picked another. */
+  originalTimezone: string;
   alert: AlertTiming;
   showAs: ShowAsOption;
+  /** Whether the user picked Show As; until then a new event's follows the all-day switch. */
+  showAsChosen: boolean;
+  /** The Show As value the event arrived with, so a save writes TRANSP only when it changed. */
+  originalShowAs: ShowAsOption;
   calendarColor: string;
   timezone: string;
   showInvitees: boolean;
@@ -144,8 +131,12 @@ export class CalendarEventPopover extends React.Component<
       // Initialize new fields with defaults
       allDay: isAllDay || false,
       repeat: 'none',
+      originalRepeat: 'none',
+      originalTimezone: DateUtils.timeZone,
       alert: '10min',
-      showAs: 'busy',
+      showAs: this._eventShowAs(),
+      showAsChosen: false,
+      originalShowAs: this._eventShowAs(),
       calendarColor: '#419bf9',
       timezone: DateUtils.timeZone,
       showInvitees: attendees && attendees.length > 0,
@@ -161,7 +152,23 @@ export class CalendarEventPopover extends React.Component<
       const { description, location, attendees, title } = this.props.event;
       const start = occurrenceStartUnix(this.props.event);
       const end = occurrenceEndUnix(this.props.event);
-      this.setState({ description, start, end, location, attendees, title });
+      const showAs = this._eventShowAs();
+      this.setState({
+        description,
+        start,
+        end,
+        location,
+        attendees,
+        title,
+        showAs,
+        showAsChosen: false,
+        originalShowAs: showAs,
+      });
+    }
+
+    const draft = this._draft();
+    if (!Utils.isEqualReact(draft, this._draft(prevState))) {
+      this.props.onDraftChange?.(draft);
     }
 
     // Autofocus invitees input when section is expanded
@@ -183,12 +190,13 @@ export class CalendarEventPopover extends React.Component<
     }
   }
 
-  onEdit = async () => {
-    // Load actual recurrence and timezone from the event's ICS data
+  // The Repeat control defaults to 'none' until this has read the event; the save writes the
+  // rule only when the control was changed, so a save before then leaves the rule alone.
+  async _loadEditDefaults(): Promise<void> {
     let repeat: RepeatOption = 'none';
     let timezone = this.state.timezone;
     try {
-      const eventId = parseEventIdFromOccurrence(this.props.event.id);
+      const eventId = CalendarUtils.parseOccurrenceId(this.props.event.id).eventId;
       const event = await DatabaseStore.find<Event>(Event, eventId);
       if (event) {
         const recurrenceInfo = ICSEventHelpers.getRecurrenceInfo(event.ics);
@@ -201,8 +209,49 @@ export class CalendarEventPopover extends React.Component<
     } catch (e) {
       // Fall back to defaults if we can't read the event
     }
-    this.setState({ editing: true, repeat, timezone });
+    this.setState({ repeat, timezone, originalRepeat: repeat, originalTimezone: timezone });
+  }
+
+  onEdit = async () => {
+    await this._loadEditDefaults();
+    this.setState({ editing: true });
   };
+
+  componentWillUnmount() {
+    this.props.onClosed?.();
+  }
+
+  _draft(state: CalendarEventPopoverState = this.state): NewEventDraft {
+    const { title, start, end, allDay, selectedCalendarId, selectedAccountId } = state;
+    return {
+      title,
+      start,
+      end,
+      isAllDay: allDay,
+      calendarId: selectedCalendarId,
+      accountId: selectedAccountId,
+    };
+  }
+
+  _eventShowAs(): ShowAsOption {
+    if (this.props.isNewEvent) return defaultShowAs(this.props.event.isAllDay);
+    return this.props.event.isFree ? 'TRANSPARENT' : 'OPAQUE';
+  }
+
+  updateAllDay = (allDay: boolean): void => {
+    const followsAllDay = this.props.isNewEvent && !this.state.showAsChosen;
+    const showAs = followsAllDay ? defaultShowAs(allDay) : this.state.showAs;
+    this.setState({ allDay, showAs });
+  };
+
+  updateShowAs = (showAs: ShowAsOption): void => {
+    this.setState({ showAs, showAsChosen: true });
+  };
+
+  /** The Show As value to write, or undefined when the user left it as the event had it. */
+  _changedShowAs(): ShowAsOption | undefined {
+    return this.state.showAs !== this.state.originalShowAs ? this.state.showAs : undefined;
+  }
 
   getStartMoment = () => moment(this.state.start * 1000);
   getEndMoment = () => moment(this.state.end * 1000);
@@ -220,7 +269,11 @@ export class CalendarEventPopover extends React.Component<
     );
     ics = ICSEventHelpers.updateEventProperty(ics, 'location', this.state.location || '');
     ics = ICSEventHelpers.updateEventProperty(ics, 'description', this.state.description || '');
-    ics = ICSEventHelpers.updateAttendees(ics, this.state.attendees || []);
+    ics = ICSEventHelpers.updateAttendees(
+      ics,
+      this.state.attendees || [],
+      organizerForAccount(this.props.event.accountId)
+    );
     return ics;
   }
 
@@ -232,7 +285,7 @@ export class CalendarEventPopover extends React.Component<
       }
 
       // Extract the real event ID from the occurrence ID (format: `${eventId}-e${idx}`)
-      const eventId = parseEventIdFromOccurrence(this.props.event.id);
+      const eventId = CalendarUtils.parseOccurrenceId(this.props.event.id).eventId;
 
       // Fetch the actual Event from the database
       const event = await DatabaseStore.find<Event>(Event, eventId);
@@ -304,12 +357,15 @@ export class CalendarEventPopover extends React.Component<
       // to the new master start (unlike absolute updateEventTimes which would drop
       // occurrences scheduled before the selected occurrence's date).
       const originalOccurrenceStart = occurrenceStartUnix(this.props.event);
+      // Passing the picker's zone unchanged would rewrite every EXDATE and RECURRENCE-ID of a
+      // UTC series into the machine's zone, so only a zone the user picked is passed.
       ics = ICSEventHelpers.updateRecurringEventTimes(
         ics,
         originalOccurrenceStart,
         this.state.start,
         this.state.end,
-        this.state.allDay
+        this.state.allDay,
+        this.state.timezone !== this.state.originalTimezone ? this.state.timezone : undefined
       );
       // Shift inline exception RECURRENCE-IDs so they still map to the correct slots
       const deltaMs = (this.state.start - originalOccurrenceStart) * 1000;
@@ -326,11 +382,18 @@ export class CalendarEventPopover extends React.Component<
       });
     }
 
-    // Update recurrence rule (only for master event edits)
-    const rrule = repeatOptionToRRule(this.state.repeat);
-    ics = ICSEventHelpers.updateRecurrenceRule(ics, rrule);
+    // The Repeat control can't express INTERVAL, BYDAY, COUNT, UNTIL or RDATE, so writing it back
+    // unchanged would flatten the rule and bump SEQUENCE for every guest.
+    if (this.state.repeat !== this.state.originalRepeat) {
+      ics = ICSEventHelpers.updateRecurrenceRule(ics, repeatOptionToRRule(this.state.repeat));
+    }
+    const showAs = this._changedShowAs();
+    if (showAs) {
+      ics = ICSEventHelpers.updateEventProperty(ics, 'transp', showAs);
+    }
 
-    event.ics = ics;
+    // One save is one revision, however many helpers assembled it.
+    event.ics = ICSEventHelpers.bumpEventSequence(ics);
     // Re-derive the cached columns from the written ICS, not from state: for a recurring "all
     // events" edit the master DTSTART/DTEND are shifted+resized and differ from the edited
     // occurrence's times (matches modifyAllOccurrences). For a non-recurring edit this equals
@@ -359,14 +422,7 @@ export class CalendarEventPopover extends React.Component<
       recurrenceEnd: masterEvent.recurrenceEnd,
     };
 
-    // The original occurrence start time — i.e., the time the RRULE generates for this slot.
-    // For a first-time exception this equals event.start (the occurrence's normal time).
-    // For a re-edit of an existing exception, event.start is the *moved* time, so we use
-    // recurrenceIdStart instead (the RECURRENCE-ID value = the original unmodified time).
-    // This ensures the upsert in createRecurrenceException finds and replaces the existing
-    // inline exception VEVENT rather than creating a duplicate.
-    const originalOccurrenceStart =
-      this.props.event.recurrenceIdStart ?? occurrenceStartUnix(this.props.event);
+    const originalOccurrenceStart = occurrenceSlot(this.props.event);
 
     // Embed the exception VEVENT inline in the master VCALENDAR with new times
     const { masterIcs, recurrenceId } = ICSEventHelpers.createRecurrenceException(
@@ -383,10 +439,11 @@ export class CalendarEventPopover extends React.Component<
       location: this.state.location || '',
       description: this.state.description || '',
       attendees: this.state.attendees || [],
+      organizer: organizerForAccount(this.props.event.accountId),
+      transparency: this._changedShowAs(),
     });
 
-    // Update master event (now contains the inline exception VEVENT)
-    masterEvent.ics = updatedMasterIcs;
+    masterEvent.ics = ICSEventHelpers.bumpEventSequence(updatedMasterIcs, recurrenceId);
     masterEvent.recurrenceStart = this.state.start;
     masterEvent.recurrenceEnd = this.state.end;
 
@@ -411,6 +468,7 @@ export class CalendarEventPopover extends React.Component<
       attendees,
       repeat,
       timezone,
+      showAs,
       selectedCalendarId,
       selectedAccountId,
     } = this.state;
@@ -432,6 +490,7 @@ export class CalendarEventPopover extends React.Component<
           : undefined,
       recurrenceRule: repeatOptionToRRule(repeat) || undefined,
       timezone,
+      transparency: showAs,
     });
   };
 
@@ -457,6 +516,10 @@ export class CalendarEventPopover extends React.Component<
     this.setState({ end: clampEnd(this.state.start, end, this.state.allDay) });
   };
 
+  updateCalendar = (calendarId: string, accountId: string): void => {
+    this.setState({ selectedCalendarId: calendarId, selectedAccountId: accountId });
+  };
+
   renderEditable = () => {
     const {
       title,
@@ -478,7 +541,7 @@ export class CalendarEventPopover extends React.Component<
 
     return (
       <div className="calendar-event-popover editing" tabIndex={0}>
-        <TabGroupRegion>
+        <TabGroupRegion className="popover-form">
           {/* Title row */}
           <div className="title-wrapper">
             <input
@@ -492,122 +555,126 @@ export class CalendarEventPopover extends React.Component<
             {/* CalendarColorPicker disabled until custom event colors are fully supported */}
           </div>
 
-          {/* Calendar selector - only shown for new events */}
-          {this.props.isNewEvent && this.props.calendars && this.props.accounts && (
-            <CalendarSelector
-              calendars={this.props.calendars}
-              accounts={this.props.accounts}
-              disabledCalendars={this.props.disabledCalendars || []}
-              selectedCalendarId={this.state.selectedCalendarId}
-              onChange={(calendarId, accountId) => {
-                this.setState({ selectedCalendarId: calendarId, selectedAccountId: accountId });
+          {/* Everything between the title and the buttons scrolls; the buttons stay put. */}
+          <div className="popover-body">
+            {/* Calendar selector - only shown for new events */}
+            {this.props.isNewEvent && this.props.calendars && this.props.accounts && (
+              <CalendarSelector
+                calendars={this.props.calendars}
+                accounts={this.props.accounts}
+                disabledCalendars={this.props.disabledCalendars || []}
+                selectedCalendarId={this.state.selectedCalendarId}
+                onChange={this.updateCalendar}
+              />
+            )}
+
+            {/* Location with video call toggle */}
+            <LocationVideoInput
+              value={location}
+              onChange={(value) => this.updateField('location', value)}
+              onVideoToggle={() => {
+                // Placeholder: could add video call link
               }}
             />
-          )}
 
-          {/* Location with video call toggle */}
-          <LocationVideoInput
-            value={location}
-            onChange={(value) => this.updateField('location', value)}
-            onVideoToggle={() => {
-              // Placeholder: could add video call link
-            }}
-          />
+            {/* All-day toggle */}
+            <AllDayToggle checked={allDay} onChange={this.updateAllDay} />
 
-          {/* All-day toggle */}
-          <AllDayToggle
-            checked={allDay}
-            onChange={(checked) => this.updateField('allDay', checked)}
-          />
+            {/* Start/End times using property rows */}
+            <EventPropertyRow label={localized('starts:')}>
+              <DatePicker value={start * 1000} onChange={(ts) => this.updateStart(ts / 1000)} />
+              {!allDay && (
+                <TimePicker value={start * 1000} onChange={(ts) => this.updateStart(ts / 1000)} />
+              )}
+            </EventPropertyRow>
 
-          {/* Start/End times using property rows */}
-          <EventPropertyRow label={localized('starts:')}>
-            <DatePicker value={start * 1000} onChange={(ts) => this.updateStart(ts / 1000)} />
-            {!allDay && (
-              <TimePicker value={start * 1000} onChange={(ts) => this.updateStart(ts / 1000)} />
-            )}
-          </EventPropertyRow>
+            <EventPropertyRow label={localized('ends:')}>
+              <DatePicker
+                value={(allDay ? inclusiveAllDayEnd(end) : end) * 1000}
+                onChange={(ts) =>
+                  this.updateEnd(
+                    allDay
+                      ? CalendarDateUtils.nextDayStartUnix(
+                          CalendarDateUtils.calendarDateFromUnix(ts / 1000)
+                        )
+                      : ts / 1000
+                  )
+                }
+              />
+              {!allDay && (
+                <TimePicker value={end * 1000} onChange={(ts) => this.updateEnd(ts / 1000)} />
+              )}
+            </EventPropertyRow>
 
-          <EventPropertyRow label={localized('ends:')}>
-            <DatePicker
-              value={(allDay ? inclusiveAllDayEnd(end) : end) * 1000}
-              onChange={(ts) =>
-                this.updateEnd(
-                  allDay
-                    ? CalendarDateUtils.nextDayStartUnix(
-                        CalendarDateUtils.calendarDateFromUnix(ts / 1000)
-                      )
-                    : ts / 1000
-                )
-              }
+            {/* Time zone selector */}
+            <TimeZoneSelector
+              value={timezone}
+              onChange={(value) => this.updateField('timezone', value)}
             />
-            {!allDay && (
-              <TimePicker value={end * 1000} onChange={(ts) => this.updateEnd(ts / 1000)} />
+
+            {/* Repeat selector */}
+            <RepeatSelector
+              value={repeat}
+              onChange={(value) => this.updateField('repeat', value)}
+            />
+
+            {/* Alert selector */}
+            <AlertSelector value={alert} onChange={(value) => this.updateField('alert', value)} />
+
+            {/* Show as selector */}
+            <ShowAsSelector value={showAs} onChange={this.updateShowAs} />
+
+            {/* Invitees section - collapsible */}
+            {showInvitees ? (
+              <div className="expanded-section">
+                <div className="section-header">
+                  <span className="section-title">{localized('Invitees')}</span>
+                  <span
+                    className="section-close"
+                    onClick={() => this.setState({ showInvitees: false })}
+                  >
+                    ×
+                  </span>
+                </div>
+                <EventAttendeesInput
+                  ref={this.attendeesInputRef}
+                  className="event-participant-field"
+                  attendees={attendees}
+                  change={(val) => this.updateField('attendees', val)}
+                />
+              </div>
+            ) : (
+              <div className="action-link" onClick={() => this.setState({ showInvitees: true })}>
+                {localized('Add Invitees')}
+              </div>
             )}
-          </EventPropertyRow>
 
-          {/* Time zone selector */}
-          <TimeZoneSelector
-            value={timezone}
-            onChange={(value) => this.updateField('timezone', value)}
-          />
-
-          {/* Repeat selector */}
-          <RepeatSelector value={repeat} onChange={(value) => this.updateField('repeat', value)} />
-
-          {/* Alert selector */}
-          <AlertSelector value={alert} onChange={(value) => this.updateField('alert', value)} />
-
-          {/* Show as selector */}
-          <ShowAsSelector value={showAs} onChange={(value) => this.updateField('showAs', value)} />
-
-          {/* Invitees section - collapsible */}
-          {showInvitees ? (
-            <div className="expanded-section">
-              <div className="section-header">
-                <span className="section-title">{localized('Invitees')}</span>
-                <span
-                  className="section-close"
-                  onClick={() => this.setState({ showInvitees: false })}
-                >
-                  ×
-                </span>
+            {/* Notes section - collapsible */}
+            {showNotes ? (
+              <div className="expanded-section">
+                <div className="section-header">
+                  <span className="section-title">{localized('Notes')}</span>
+                  <span
+                    className="section-close"
+                    onClick={() => this.setState({ showNotes: false })}
+                  >
+                    ×
+                  </span>
+                </div>
+                <textarea
+                  ref={this.notesTextareaRef}
+                  value={notes}
+                  aria-label={localized('Notes')}
+                  placeholder={localized('Add notes or URL...')}
+                  onChange={(e) => this.updateField('description', e.target.value)}
+                />
               </div>
-              <EventAttendeesInput
-                ref={this.attendeesInputRef}
-                className="event-participant-field"
-                attendees={attendees}
-                change={(val) => this.updateField('attendees', val)}
-              />
-            </div>
-          ) : (
-            <div className="action-link" onClick={() => this.setState({ showInvitees: true })}>
-              {localized('Add Invitees')}
-            </div>
-          )}
-
-          {/* Notes section - collapsible */}
-          {showNotes ? (
-            <div className="expanded-section">
-              <div className="section-header">
-                <span className="section-title">{localized('Notes')}</span>
-                <span className="section-close" onClick={() => this.setState({ showNotes: false })}>
-                  ×
-                </span>
+            ) : (
+              <div className="action-link" onClick={() => this.setState({ showNotes: true })}>
+                {localized('Add Notes or URL')}
               </div>
-              <textarea
-                ref={this.notesTextareaRef}
-                value={notes}
-                aria-label={localized('Notes')}
-                placeholder={localized('Add notes or URL...')}
-                onChange={(e) => this.updateField('description', e.target.value)}
-              />
-            </div>
-          ) : (
-            <div className="action-link" onClick={() => this.setState({ showNotes: true })}>
-              {localized('Add Notes or URL')}
-            </div>
-          )}
+            )}
+          </div>
 
           {/* Action buttons */}
           <EventPopoverActions onSave={this.saveEdits} onCancel={() => Actions.closePopover()} />
@@ -616,16 +683,28 @@ export class CalendarEventPopover extends React.Component<
     );
   };
 
+  // A writable calendar and a meeting we organize: only the organizer revises one (RFC 5546
+  // section 2.1.4), the same test canMoveEvent applies to dragging.
+  _isEditable(): boolean {
+    return !this.props.isCalendarReadOnly && (this.props.isNewEvent || this.props.event.isMine);
+  }
+
   render() {
-    if (!this.props.isCalendarReadOnly && (this.state.editing || this.props.isNewEvent)) {
+    if (this._isEditable() && (this.state.editing || this.props.isNewEvent)) {
       return this.renderEditable();
     }
-    return <CalendarEventPopoverUnenditable {...this.props} onEdit={this.onEdit} />;
+    return (
+      <CalendarEventPopoverUnenditable
+        {...this.props}
+        editable={this._isEditable()}
+        onEdit={this.onEdit}
+      />
+    );
   }
 }
 
 class CalendarEventPopoverUnenditable extends React.Component<
-  CalendarEventPopoverProps & { onEdit: () => void }
+  CalendarEventPopoverProps & { editable: boolean; onEdit: () => void }
 > {
   descriptionRef = React.createRef<HTMLDivElement>();
 
@@ -647,8 +726,7 @@ class CalendarEventPopoverUnenditable extends React.Component<
 
     const startMoment = moment(event.start * 1000);
     const date = startMoment.format('dddd, MMMM D'); // e.g. Tuesday, February 22
-    const endMoment = moment(event.end * 1000);
-    const timeRange = `${formatTime(startMoment)} - ${formatTime(endMoment)}`;
+    const timeRange = `${formatTime(event.start, true)} - ${formatTime(event.end, true)}`;
     return (
       <div>
         {date}
@@ -674,8 +752,30 @@ class CalendarEventPopoverUnenditable extends React.Component<
     });
   }
 
+  // The card is what a double-click on a meeting we cannot edit produces, so it carries the
+  // one action that replaces editing.
+  _renderProposeNewTime() {
+    const { event } = this.props;
+    if (!canRespondToEvent(event)) {
+      return null;
+    }
+    return (
+      <div className="section propose-time-action">
+        <div
+          className="btn btn-link"
+          onClick={() => {
+            Actions.closePopover();
+            openProposeNewTimePopover(event);
+          }}
+        >
+          {localized('Propose a new time') + '...'}
+        </div>
+      </div>
+    );
+  }
+
   render() {
-    const { event, onEdit, isCalendarReadOnly } = this.props;
+    const { event, onEdit, editable } = this.props;
     const { title, description, location, attendees } = event;
 
     const notes = extractNotesFromDescription(description);
@@ -684,7 +784,7 @@ class CalendarEventPopoverUnenditable extends React.Component<
       <div className="calendar-event-popover" tabIndex={0}>
         <div className="title-wrapper">
           <div className="title">{title}</div>
-          {!isCalendarReadOnly && (
+          {editable && (
             <RetinaImg
               className="edit-icon"
               name="edit-icon.png"
@@ -694,127 +794,40 @@ class CalendarEventPopoverUnenditable extends React.Component<
             />
           )}
         </div>
-        {location && (
-          <div className="location">
-            {location.startsWith('http') || location.startsWith('tel:') ? (
-              <a href={location}>{location}</a>
-            ) : (
-              location
-            )}
-          </div>
-        )}
-        <div className="section">{this.renderTime()}</div>
-        <ScrollRegion className="section invitees">
-          <div className="label">{localized(`Invitees`)}: </div>
-          <div className="invitees-list">
-            {sortAttendeesByStatus(attendees).map((a, idx) => {
-              const partstat = a.partstat || 'NEEDS-ACTION';
-              const questionMarkIcon = (
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                  <path
-                    d="M3.5 3.5a1.5 1.5 0 0 1 2.6 1c0 1-1.1 1-1.1 2"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                  />
-                  <circle cx="5" cy="8.5" r="0.75" fill="currentColor" />
-                </svg>
-              );
-              let statusIcon: React.ReactNode;
-              let statusClass = 'needs-action';
-              if (partstat === 'ACCEPTED') {
-                statusIcon = (
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                    <path
-                      d="M1.5 5.5L4 8l4.5-6"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                );
-                statusClass = 'accepted';
-              } else if (partstat === 'DECLINED') {
-                statusIcon = (
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                    <path
-                      d="M2 2l6 6M8 2l-6 6"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                );
-                statusClass = 'declined';
-              } else if (partstat === 'TENTATIVE') {
-                statusIcon = questionMarkIcon;
-                statusClass = 'tentative';
-              } else {
-                statusIcon = questionMarkIcon;
-              }
-              return (
-                <div key={idx} className={`attendee-chip ${statusClass}`}>
-                  <span className="attendee-status">{statusIcon}</span>
+        {/* Everything under the title scrolls as one body when the card is taller than the window. */}
+        <div className="popover-body">
+          {location && (
+            <div className="location">
+              {location.startsWith('http') || location.startsWith('tel:') ? (
+                <a href={location}>{location}</a>
+              ) : (
+                location
+              )}
+            </div>
+          )}
+          <div className="section">{this.renderTime()}</div>
+          {this._renderProposeNewTime()}
+          <ScrollRegion className="section invitees">
+            <div className="label">{localized(`Invitees`)}: </div>
+            <div className="invitees-list">
+              {sortAttendeesByStatus(attendees).map((a, idx) => (
+                <div key={idx} className={`attendee-chip ${attendeeStatusClass(a)}`}>
+                  <span className="attendee-status">
+                    <AttendeeStatusIcon attendee={a} />
+                  </span>
                   <span className="attendee-name">{a.name || a.email}</span>
                 </div>
-              );
-            })}
-          </div>
-        </ScrollRegion>
-        <ScrollRegion className="section description">
-          <div className="description">
-            <div className="label">{localized(`Notes`)}: </div>
-            <div ref={this.descriptionRef}>{notes}</div>
-          </div>
-        </ScrollRegion>
+              ))}
+            </div>
+          </ScrollRegion>
+          <ScrollRegion className="section description">
+            <div className="description">
+              <div className="label">{localized(`Notes`)}: </div>
+              <div ref={this.descriptionRef}>{notes}</div>
+            </div>
+          </ScrollRegion>
+        </div>
       </div>
     );
   }
-}
-
-function sortAttendeesByStatus(attendees: EventAttendee[]): EventAttendee[] {
-  const statusOrder = { ACCEPTED: 0, TENTATIVE: 1, 'NEEDS-ACTION': 1, DECLINED: 2 };
-  return [...attendees].sort((a, b) => {
-    const aOrder = statusOrder[a.partstat] ?? 1;
-    const bOrder = statusOrder[b.partstat] ?? 1;
-    if (aOrder !== bOrder) return aOrder - bOrder;
-    const aName = (a.name || a.email).toLowerCase();
-    const bName = (b.name || b.email).toLowerCase();
-    return aName.localeCompare(bName);
-  });
-}
-
-function extractNotesFromDescription(description: string) {
-  const fragment = document.createDocumentFragment();
-  const descriptionRoot = document.createElement('root');
-  fragment.appendChild(descriptionRoot);
-  descriptionRoot.innerHTML = description;
-
-  const els = descriptionRoot.querySelectorAll('meta[itemprop=description]');
-  let notes: string = null;
-  if (els.length) {
-    notes = Array.from(els)
-      .map((el) => (el as HTMLMetaElement).content)
-      .join('\n');
-  } else {
-    notes = descriptionRoot.innerText;
-  }
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const nextNotes = notes.replace('\n\n', '\n');
-    if (nextNotes === notes) {
-      break;
-    }
-    notes = nextNotes;
-  }
-  return notes;
-}
-
-function formatTime(momentTime: Moment) {
-  const min = momentTime.minutes();
-  if (min === 0) {
-    return momentTime.format('h A');
-  }
-  return momentTime.format('h:mm A');
 }

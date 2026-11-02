@@ -10,6 +10,7 @@ import os from 'os';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import { localized } from './intl';
+import { developerToolsAvailable } from './developer-tools';
 import { IIdentity, Account } from 'mailspring-exports';
 
 import {
@@ -31,7 +32,7 @@ export const LocalizedErrorStrings = {
   ),
   ErrorInvalidAccount: localized(
     'This account is invalid or Mailspring could not find the Inbox or All Mail folder. %@',
-    'http://support.getmailspring.com/hc/en-us/articles/115001881912'
+    'https://getmailspring.com/docs/enable-all-mail-folder-for-gmail'
   ),
   ErrorTLSNotAvailable: localized('TLS Not Available'),
   ErrorParse: localized('Parsing Error'),
@@ -78,7 +79,7 @@ export const LocalizedErrorStrings = {
   ),
   ErrorIdentityMissingFields: localized(
     'Your Mailspring ID is missing required fields - you may need to reset Mailspring. %@',
-    'http://support.getmailspring.com/hc/en-us/articles/115002012491'
+    'https://getmailspring.com/docs/your-mailspring-id-is-missing-required-fields'
   ),
 };
 
@@ -113,9 +114,30 @@ export function lastJSONResponse(stdout: string): any | null {
   return null;
 }
 
+// Matched without the line before it: on Windows mailsync's stderr is in text mode, so \n arrives as \r\n.
+const EXCEPTION_HEADER = '*** Mailspring Sync';
+
+/*
+Drops everything before the last exception mailsync logged to stderr.
+
+mailsync logs every exception it catches to stderr, including ones it recovers from (a
+network error, or a login rejection it retries), so the whole buffer can name an error
+that is not the one it exited on. The bridge classifies the exit from this text.
+*/
+export function lastLoggedException(stderr: string): string {
+  const start = stderr.lastIndexOf(EXCEPTION_HEADER);
+  return start > 0 ? stderr.slice(start) : stderr;
+}
+
 export class MailsyncProcess extends EventEmitter {
   _proc: ChildProcess = null;
   _win = null;
+
+  // The bridge registers a client before spawning it, after the account's secrets are read
+  // from the keychain; a message sent in between is lost.
+  get spawned() {
+    return !!this._proc;
+  }
 
   // these must be set before you use the process
   account: Account = null;
@@ -159,6 +181,7 @@ export class MailsyncProcess extends EventEmitter {
         nodeIntegration: false,
         javascript: false,
         contextIsolation: false,
+        devTools: developerToolsAvailable(),
       },
     });
     this._win.setContentSize(350, 90);
@@ -182,13 +205,16 @@ export class MailsyncProcess extends EventEmitter {
   }
 
   _spawnProcess(mode) {
-    const env = {
-      ...process.env,
+    // Build on a null-prototype object so the spawned engine inherits only
+    // genuine environment variables, not properties a prototype-pollution bug
+    // elsewhere in the process could have added to Object.prototype. See
+    // GHSA-gjr7-3mj2-cr54.
+    const env = Object.assign(Object.create(null), process.env, {
       CONFIG_DIR_PATH: this.configDirPath,
       GMAIL_CLIENT_ID: GMAIL_CLIENT_ID,
       GMAIL_CLIENT_SECRET: GMAIL_CLIENT_SECRET,
       IDENTITY_SERVER: 'unknown',
-    };
+    });
     if (process.type === 'renderer') {
       const rootURLForServer = require('./flux/mailspring-api-request').rootURLForServer;
       env.IDENTITY_SERVER = rootURLForServer('identity');
@@ -296,7 +322,7 @@ export class MailsyncProcess extends EventEmitter {
             // and may contain system errors (shared library issues, etc). Include this
             // in the logs so users can fix on their own or report detailed bugs.
             const rawLog = this._stripSecrets(buffer.toString());
-            return reject(this._buildCrashError(mode, code, signal, rawLog));
+            return reject(this._buildCrashError(code, signal, rawLog));
           }
 
           if (code === 0) {
@@ -313,14 +339,19 @@ export class MailsyncProcess extends EventEmitter {
             if (response.error_service) {
               msg = `${msg} (${response.error_service.toUpperCase()})`;
             }
-            // Set only for a rejected TLS handshake today; arrives unlocalized.
+            // Set for a rejected TLS handshake or certificate; arrives unlocalized.
             if (response.error_advice) {
               msg = `${msg} ${response.error_advice}`;
             }
             const error = new Error(msg);
             (error as any).rawLog = this._stripSecrets(response.log);
             (error as any).errorAdvice = response.error_advice || null;
+            // Certificates that failed validation, for the user to review and accept.
+            (error as any).certificates = response.certificates || null;
             (error as any).errorService = response.error_service || null;
+            // Set when the engine classified the failure as this machine being unable to
+            // reach the network, rather than a server refusing or rejecting us.
+            (error as any).isNetworkError = response.error_offline === true;
             // Errors mailsync explicitly classified (bad credentials, unreachable
             // server, TLS/certificate problems, provider-side rate limits, etc.)
             // describe the mail server or the user's settings, not a bug in
@@ -331,43 +362,39 @@ export class MailsyncProcess extends EventEmitter {
             // failures.
             (error as any).isUserError =
               isRecognizedMailsyncError && !AMBIGUOUS_MAILSYNC_ERRORS.has(response.error);
+            // Every classified error thrown here shares this one call site, so
+            // without an explicit fingerprint Sentry's stack-based grouping
+            // collapses unrelated failures (bad credentials, TLS errors, unknown
+            // mailsync error codes, etc.) into a single unactionable issue keyed
+            // off whichever message happened to report first. Group by the raw
+            // mailsync error code instead, which is what actually distinguishes
+            // one failure mode from another (see error-logger-extensions/sentry-error-reporter.js).
+            (error as any).fingerprint = [
+              'mailsync-classified-error',
+              response.error || 'unrecognized',
+              response.error_service || 'none',
+            ];
             return reject(error);
           }
         } catch (err) {
           const rawLog = this._stripSecrets(buffer.toString());
-          return reject(this._buildCrashError(mode, code, signal, rawLog));
+          return reject(this._buildCrashError(code, signal, rawLog));
         }
       });
     });
   }
 
-  // Called when the mailsync child process exits without producing a well-formed
-  // JSON response - either it crashed outright, or was terminated by a signal
-  // (in which case `code` is null and the message would otherwise be a useless
-  // "mailsync: null"). One common cause is an uncaught C++ exception while making
-  // an HTTPS request during the `test` mode used to validate a new account (e.g.
-  // refreshing an OAuth token): mailsync logs a `"offline":true,"retryable":true`
-  // marker for these before crashing, since they're almost always a local
-  // network/TLS interception issue rather than a bug we can act on. Detect that
-  // signature - scoped to `test`, since `migrate`/`resetCache` don't make network
-  // requests and shouldn't have unrelated crashes reclassified this way - and
-  // surface a friendly, localized, network-flagged error so callers can avoid
-  // reporting it to Sentry.
-  _buildCrashError(
-    mode: string,
-    code: number | null,
-    signal: NodeJS.Signals | null,
-    rawLog: string
-  ) {
-    const isNetworkFailure = mode === 'test' && /"offline"\s*:\s*true/.test(rawLog);
+  // Called when the mailsync child process wrote no parseable JSON result, meaning it
+  // crashed outright or never ran: a segfault inside mailcore, the executable-path check
+  // that exits 2, a missing shared library. The raw log is part of the message because
+  // those are diagnosable by the user or by whoever reads the bug report. A process
+  // terminated by a signal has a null `code`, which would otherwise read "mailsync: null".
+  _buildCrashError(code: number | null, signal: NodeJS.Signals | null, rawLog: string) {
     const exitDescription = signal ? `signal ${signal}` : `${code}`;
-    const error = isNetworkFailure
-      ? new Error(LocalizedErrorStrings.ErrorConnection)
-      : new Error(
-          `${localized(`An unknown error has occurred`)} mailsync: ${exitDescription}. ${rawLog}`
-        );
+    const error = new Error(
+      `${localized(`An unknown error has occurred`)} mailsync: ${exitDescription}. ${rawLog}`
+    );
     (error as any).rawLog = rawLog;
-    (error as any).isNetworkError = isNetworkFailure;
     return error;
   }
 
@@ -401,7 +428,7 @@ export class MailsyncProcess extends EventEmitter {
     if (this._proc.stderr) {
       this._proc.stderr.on('data', (data) => {
         try {
-          errBuffer += data.toString();
+          errBuffer = lastLoggedException(errBuffer + data.toString());
           // Trim to last 100KB if the buffer grows too large to avoid OOM
           if (errBuffer.length > 100 * 1024) {
             errBuffer = errBuffer.slice(-100 * 1024);

@@ -2,11 +2,13 @@ import {
   ChangeFolderTask,
   ChangeLabelsTask,
   SyncbackEventTask,
+  CategoryStore,
   Thread,
   Folder,
   Label,
   Event as MailspringEvent,
 } from 'mailspring-exports';
+import { parseICSString } from '../../src/calendar-utils';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -55,49 +57,52 @@ describe('ChangeFolderTask', function () {
     allMail = makeFolder('all-id', 'all', 'all');
   });
 
-  describe('constructor: previousFolder auto-detection', function () {
-    it('sets previousFolder and canBeUndone=true when all threads are in one folder', function () {
-      const t1 = makeThread('t1', 'ac-1', [inbox]);
-      const t2 = makeThread('t2', 'ac-1', [inbox]);
-      const task = new ChangeFolderTask({ threads: [t1, t2], folder: archive } as any);
-      expect(task.previousFolder).toBe(inbox);
-      expect(task.canBeUndone).toBe(true);
-    });
-
-    it('sets canBeUndone=false and leaves previousFolder unset when threads span multiple folders', function () {
+  describe('constructor', function () {
+    it('is undoable by default, even when threads span several folders', function () {
       const t1 = makeThread('t1', 'ac-1', [inbox]);
       const t2 = makeThread('t2', 'ac-1', [trash]);
       const task = new ChangeFolderTask({ threads: [t1, t2], folder: archive } as any);
-      expect(task.previousFolder).toBeFalsy();
-      expect(task.canBeUndone).toBe(false);
+      expect(task.canBeUndone).toBe(true);
     });
 
-    it('prefers the non-destination folder when a thread is already in the destination', function () {
-      // Thread is in both inbox and archive; we're moving to archive, so previous = inbox
-      const t1 = makeThread('t1', 'ac-1', [archive, inbox]);
+    it('defaults sourceFolderIds to an empty array', function () {
+      const t1 = makeThread('t1', 'ac-1', [inbox]);
       const task = new ChangeFolderTask({ threads: [t1], folder: archive } as any);
-      expect(task.previousFolder.id).toBe('inbox-id');
-      expect(task.canBeUndone).toBe(true);
+      expect(task.sourceFolderIds).toEqual([]);
+      expect(task.toJSON().sourceFolderIds).toEqual([]);
     });
 
-    it('does not override previousFolder when it is explicitly provided', function () {
-      const t1 = makeThread('t1', 'ac-1', [inbox]);
-      const t2 = makeThread('t2', 'ac-1', [trash]);
+    it('drops the destination from sourceFolderIds', function () {
+      // Gmail: dragging from the All Mail folder onto a label scopes the move to All
+      // Mail and sends it to All Mail (mailbox-perspective actionsForReceivingThreads).
+      const t1 = makeThread('t1', 'ac-1', [allMail]);
       const task = new ChangeFolderTask({
-        threads: [t1, t2],
-        folder: archive,
-        previousFolder: inbox,
+        threads: [t1],
+        folder: allMail,
+        sourceFolderIds: [allMail.id],
       } as any);
-      expect(task.previousFolder).toBe(inbox);
+      expect(task.sourceFolderIds).toEqual([]);
+      expect(() => task.willBeQueued()).not.toThrow();
+
+      const mixed = new ChangeFolderTask({
+        threads: [t1],
+        folder: archive,
+        sourceFolderIds: [inbox.id, archive.id],
+      } as any);
+      expect(mixed.sourceFolderIds).toEqual([inbox.id]);
     });
 
-    it('sets canBeUndone=true when a single message is provided', function () {
-      const inbox2 = makeFolder('inbox2-id', 'inbox', 'INBOX');
-      // Simulate a message with a folder property
-      const msg: any = { id: 'msg-1', accountId: 'ac-1', folder: inbox2 };
-      const task = new ChangeFolderTask({ messages: [msg], folder: archive } as any);
-      expect(task.previousFolder.id).toBe('inbox2-id');
-      expect(task.canBeUndone).toBe(true);
+    it('keeps sourceFolderIds and round-trips them through JSON', function () {
+      const t1 = makeThread('t1', 'ac-1', [inbox]);
+      const task = new ChangeFolderTask({
+        threads: [t1],
+        folder: archive,
+        sourceFolderIds: [inbox.id],
+      } as any);
+      expect(task.sourceFolderIds).toEqual([inbox.id]);
+      const copy = task.createIdenticalTask();
+      expect(copy.sourceFolderIds).toEqual([inbox.id]);
+      expect(copy.folder.id).toBe(archive.id);
     });
   });
 
@@ -146,6 +151,12 @@ describe('ChangeFolderTask', function () {
       const task = new ChangeFolderTask({ messageIds: ['m1'], folder: archive } as any);
       expect(() => task.willBeQueued()).not.toThrow();
     });
+
+    it('throws when sourceFolderIds was changed after construction to contain the destination', function () {
+      const task = new ChangeFolderTask({ threadIds: ['t1'], folder: archive } as any);
+      task.sourceFolderIds = [archive.id];
+      expect(() => task.willBeQueued()).toThrow();
+    });
   });
 
   describe('description()', function () {
@@ -183,6 +194,17 @@ describe('ChangeFolderTask', function () {
       expect(desc).toContain('2');
       expect(desc).toContain('message');
     });
+
+    it('names the source folder when the move is scoped to one', function () {
+      spyOn(CategoryStore, 'byId').andCallFake((aid, id) => (id === inbox.id ? inbox : undefined));
+      const task = new ChangeFolderTask({
+        threadIds: ['t1'],
+        accountId: 'ac-1',
+        folder: archive,
+        sourceFolderIds: [inbox.id],
+      } as any);
+      expect(task.description()).toBe('Moved from Inbox to archive');
+    });
   });
 
   describe('_isArchive()', function () {
@@ -208,25 +230,135 @@ describe('ChangeFolderTask', function () {
   });
 
   describe('createUndoTask()', function () {
-    it('swaps folder and previousFolder on the undo task', function () {
-      const t1 = makeThread('t1', 'ac-1', [inbox]);
-      const task = new ChangeFolderTask({ threads: [t1], folder: archive } as any);
-      const undoTask = task.createUndoTask();
-      expect(undoTask.folder.id).toBe(inbox.id);
-      expect(undoTask.previousFolder.id).toBe(archive.id);
+    beforeEach(function () {
+      const known = { [inbox.id]: inbox, [archive.id]: archive, [trash.id]: trash };
+      spyOn(CategoryStore, 'byId').andCallFake((aid, id) => known[id]);
     });
 
-    it('marks the undo task as isUndo=true', function () {
+    // Mirrors the version of the task the engine streams back after its local phase.
+    function taskAfterLocalPhase(undoPlacements) {
       const t1 = makeThread('t1', 'ac-1', [inbox]);
-      const task = new ChangeFolderTask({ threads: [t1], folder: archive } as any);
-      const undoTask = task.createUndoTask();
+      const task = new ChangeFolderTask({
+        threads: [t1],
+        folder: archive,
+        sourceFolderIds: [inbox.id],
+      } as any);
+      return new ChangeFolderTask({ ...task.toJSON(), status: 'remote', undoPlacements });
+    }
+
+    it('copies the engine-written undoPlacements to restorePlacements', function () {
+      const undoPlacements = {
+        'm-1': [{ folderId: inbox.id, bits: 1 }],
+        'm-2': [
+          { folderId: inbox.id, bits: 1 },
+          { folderId: trash.id, bits: 0 },
+        ],
+      };
+      const undoTask = taskAfterLocalPhase(undoPlacements).createUndoTask();
+      expect(undoTask.restorePlacements).toEqual(undoPlacements);
+      expect(undoTask.undoPlacements).toBeUndefined();
+      expect(undoTask.sourceFolderIds).toEqual([archive.id]);
+      expect(undoTask.threadIds).toEqual(['t1']);
       expect(undoTask.isUndo).toBe(true);
     });
 
-    it('throws when attempting to create an undo of an undo', function () {
+    it('sets folder to the first recorded source so the undo has a sensible description', function () {
+      const undoTask = taskAfterLocalPhase({
+        'm-1': [{ folderId: inbox.id, bits: 0 }],
+      }).createUndoTask();
+      expect(undoTask.folder.id).toBe(inbox.id);
+      expect(undoTask.description()).toBe('Moved from archive to Inbox');
+    });
+
+    it('returns no undo tasks when none of the recorded folders still exists', function () {
+      const task = taskAfterLocalPhase({ 'm-1': [{ folderId: 'deleted-folder-id', bits: 0 }] });
+      expect(task.createUndoTasks()).toEqual([]);
+    });
+
+    it('returns no undo tasks when the engine reports that the move selected no copy', function () {
+      const task = taskAfterLocalPhase({});
+      expect(task.createUndoTasks()).toEqual([]);
+      expect(() => task.createUndoTask()).toThrow();
+    });
+
+    it('serializes restorePlacements for the engine', function () {
+      const undoPlacements = { 'm-1': [{ folderId: inbox.id, bits: 3 }] };
+      const json = taskAfterLocalPhase(undoPlacements).createUndoTask().toJSON();
+      expect(json.restorePlacements).toEqual(undoPlacements);
+      expect(json.isUndo).toBe(true);
+      expect(json.undoPlacements).toBeUndefined();
+    });
+
+    it('falls back to reversing a single-source move when the engine has not reported placements', function () {
       const t1 = makeThread('t1', 'ac-1', [inbox]);
-      const task = new ChangeFolderTask({ threads: [t1], folder: archive } as any);
+      const task = new ChangeFolderTask({
+        threads: [t1],
+        folder: archive,
+        sourceFolderIds: [inbox.id],
+      } as any);
       const undoTask = task.createUndoTask();
+      expect(undoTask.folder.id).toBe(inbox.id);
+      expect(undoTask.sourceFolderIds).toEqual([archive.id]);
+      expect(undoTask.restorePlacements).toBeUndefined();
+    });
+
+    describe('without undoPlacements or a single source folder', function () {
+      it('sends each thread back to the folder it was in when the task was built', function () {
+        const sent = makeFolder('sent-id', 'sent', 'Sent');
+        const t1 = makeThread('t1', 'ac-1', [inbox, sent]);
+        const t2 = makeThread('t2', 'ac-1', [inbox]);
+        const t3 = makeThread('t3', 'ac-1', [trash]);
+        const task = new ChangeFolderTask({ threads: [t1, t2, t3], folder: archive } as any);
+
+        const undoTasks = task.createUndoTasks();
+        expect(undoTasks.length).toBe(2);
+        const [toInbox, toTrash] = undoTasks;
+        expect(toInbox.folder.id).toBe(inbox.id);
+        expect(toInbox.threadIds).toEqual(['t1', 't2']);
+        expect(toInbox.sourceFolderIds).toEqual([archive.id]);
+        expect(toInbox.isUndo).toBe(true);
+        expect(toTrash.folder.id).toBe(trash.id);
+        expect(toTrash.threadIds).toEqual(['t3']);
+        expect(toTrash.sourceFolderIds).toEqual([archive.id]);
+        expect(() => task.createUndoTask()).toThrow();
+      });
+
+      it('prefers a folder the move was scoped to over one it was not', function () {
+        const spam = makeFolder('spam-id', 'spam', 'Spam');
+        const t1 = makeThread('t1', 'ac-1', [inbox, spam]);
+        const task = new ChangeFolderTask({
+          threads: [t1],
+          folder: trash,
+          sourceFolderIds: [spam.id, 'other-folder-id'],
+        } as any);
+        const [undoTask] = task.createUndoTasks();
+        expect(undoTask.folder.id).toBe(spam.id);
+      });
+
+      it('falls back to a Sent copy only when nothing else was moved', function () {
+        const sent = makeFolder('sent-id', 'sent', 'Sent');
+        const t1 = makeThread('t1', 'ac-1', [sent]);
+        const task = new ChangeFolderTask({ threads: [t1], folder: trash } as any);
+        const [undoTask] = task.createUndoTasks();
+        expect(undoTask.folder.id).toBe(sent.id);
+      });
+
+      it('returns no undo tasks when the original folders are unknown', function () {
+        const task = new ChangeFolderTask({ threadIds: ['t1'], folder: archive } as any);
+        expect(task.createUndoTasks()).toEqual([]);
+        expect(() => task.createUndoTask()).toThrow();
+      });
+    });
+
+    it('does not carry undoPlacements onto a redo (identical) task', function () {
+      const task = taskAfterLocalPhase({ 'm-1': [inbox.id] });
+      expect(task.createIdenticalTask().undoPlacements).toBeUndefined();
+    });
+
+    it('throws when attempting to create an undo of an undo', function () {
+      const undoTask = taskAfterLocalPhase({
+        'm-1': [{ folderId: inbox.id, bits: 0 }],
+      }).createUndoTask();
       expect(() => undoTask.createUndoTask()).toThrow();
     });
   });
@@ -561,8 +693,28 @@ describe('ChangeLabelsTask', function () {
 // ---------------------------------------------------------------------------
 
 describe('SyncbackEventTask', function () {
-  const SAMPLE_ICS_ORIGINAL = 'BEGIN:VCALENDAR\nSUMMARY:Original\nEND:VCALENDAR';
-  const SAMPLE_ICS_NEW = 'BEGIN:VCALENDAR\nSUMMARY:Updated\nEND:VCALENDAR';
+  const eventIcs = (start: string, sequence: number) => `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+BEGIN:VEVENT
+UID:undo-uid@test
+DTSTART:20261008T${start}00Z
+DTEND:20261008T140000Z
+SUMMARY:Test move
+DTSTAMP:20261001T000000Z
+SEQUENCE:${sequence}
+END:VEVENT
+END:VCALENDAR`;
+  const revisionOf = (ics: string) => {
+    const vevent = parseICSString(ics).root.getFirstSubcomponent('vevent');
+    return {
+      start: vevent.getFirstPropertyValue('dtstart').toString(),
+      sequence: vevent.getFirstPropertyValue('sequence'),
+    };
+  };
+  // Moved 8:00 to 8:15 CDT.
+  const SAMPLE_ICS_ORIGINAL = eventIcs('1300', 1);
+  const SAMPLE_ICS_NEW = eventIcs('1315', 2);
 
   describe('forCreating()', function () {
     it('creates a task without undoData', function () {
@@ -672,7 +824,7 @@ describe('SyncbackEventTask', function () {
       const undoData = { ics: SAMPLE_ICS_ORIGINAL, recurrenceStart: 1000, recurrenceEnd: 2000 };
       const task = SyncbackEventTask.forUpdating({ event, undoData });
       const undoTask = task.createUndoTask();
-      expect(undoTask.event.ics).toBe(SAMPLE_ICS_ORIGINAL);
+      expect(revisionOf(undoTask.event.ics).start).toBe('2026-10-08T13:00:00Z');
       expect(undoTask.event.recurrenceStart).toBe(1000);
       expect(undoTask.event.recurrenceEnd).toBe(2000);
     });
@@ -715,6 +867,169 @@ describe('SyncbackEventTask', function () {
     });
   });
 
+  describe('SEQUENCE across undo and redo', function () {
+    it('never sends an undo or redo below the SEQUENCE last sent', function () {
+      const event = makeEvent({ id: 'undo-redo-event', ics: SAMPLE_ICS_NEW } as any);
+      const undoData = { ics: SAMPLE_ICS_ORIGINAL, recurrenceStart: 1000, recurrenceEnd: 2000 };
+      const move = SyncbackEventTask.forUpdating({ event, undoData });
+
+      const undo = revisionOf(move.createUndoTask().event.ics);
+      const redo = revisionOf(move.createIdenticalTask().event.ics);
+      const undoAgain = revisionOf(move.createUndoTask().event.ics);
+
+      expect(undo).toEqual({ start: '2026-10-08T13:00:00Z', sequence: 2 });
+      expect(redo).toEqual({ start: '2026-10-08T13:15:00Z', sequence: 2 });
+      expect(undoAgain).toEqual({ start: '2026-10-08T13:00:00Z', sequence: 2 });
+    });
+
+    it("undoes two moves of one event at the later move's SEQUENCE", function () {
+      const event = makeEvent({ id: 'two-moves-event', ics: SAMPLE_ICS_NEW } as any);
+      const first = SyncbackEventTask.forUpdating({
+        event,
+        undoData: { ics: SAMPLE_ICS_ORIGINAL, recurrenceStart: 1000, recurrenceEnd: 2000 },
+      });
+      const movedAgain = makeEvent({ id: 'two-moves-event', ics: eventIcs('1330', 3) } as any);
+      const second = SyncbackEventTask.forUpdating({
+        event: movedAgain,
+        undoData: { ics: SAMPLE_ICS_NEW, recurrenceStart: 1000, recurrenceEnd: 2000 },
+      });
+
+      const undoSecond = revisionOf(second.createUndoTask().event.ics);
+      const undoFirst = revisionOf(first.createUndoTask().event.ics);
+
+      expect(undoSecond).toEqual({ start: '2026-10-08T13:15:00Z', sequence: 3 });
+      expect(undoFirst).toEqual({ start: '2026-10-08T13:00:00Z', sequence: 3 });
+    });
+
+    it('undoes an edit at the SEQUENCE of an answer queued after it', function () {
+      // The organizer's update reached our copy at SEQUENCE 3, and our answer was written on it.
+      const event = makeEvent({ id: 'answered-event', ics: SAMPLE_ICS_NEW } as any);
+      const edit = SyncbackEventTask.forUpdating({
+        event,
+        undoData: { ics: SAMPLE_ICS_ORIGINAL, recurrenceStart: 1000, recurrenceEnd: 2000 },
+      });
+      SyncbackEventTask.forAnswering({
+        event: makeEvent({ id: 'answered-event', ics: eventIcs('1315', 3) } as any),
+        answer: { email: 'me@example.com', status: 'ACCEPTED' },
+      });
+
+      expect(revisionOf(edit.createUndoTask().event.ics)).toEqual({
+        start: '2026-10-08T13:00:00Z',
+        sequence: 3,
+      });
+    });
+  });
+
+  describe('undo and redo against the copy last queued', function () {
+    // A daily series at 13:00Z, with optional overrides ([RECURRENCE-ID time, start time, SEQUENCE])
+    // and EXDATEs.
+    const seriesIcs = (
+      overrides: [string, string, number][] = [],
+      exdate = '',
+      summary = 'Test series'
+    ) =>
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//Test//Test//EN',
+        'BEGIN:VEVENT',
+        'UID:series-uid@test',
+        'DTSTART:20261008T130000Z',
+        'DTEND:20261008T140000Z',
+        'RRULE:FREQ=DAILY',
+        ...(exdate ? [`EXDATE:${exdate}`] : []),
+        `SUMMARY:${summary}`,
+        'DTSTAMP:20261001T000000Z',
+        'SEQUENCE:0',
+        'END:VEVENT',
+        ...overrides.flatMap(([rid, start, sequence]) => [
+          'BEGIN:VEVENT',
+          'UID:series-uid@test',
+          `RECURRENCE-ID:${rid}`,
+          `DTSTART:${start}`,
+          `DTEND:${start.replace(/T(\d\d)/, (_, h) => `T${String(+h + 1).padStart(2, '0')}`)}`,
+          'SUMMARY:Test series',
+          'DTSTAMP:20261001T000000Z',
+          `SEQUENCE:${sequence}`,
+          'END:VEVENT',
+        ]),
+        'END:VCALENDAR',
+      ].join('\r\n');
+    const overridesOf = (ics: string) =>
+      parseICSString(ics)
+        .root.getAllSubcomponents('vevent')
+        .filter((v) => v.getFirstPropertyValue('recurrence-id'))
+        .map((v) => [
+          v.getFirstPropertyValue('recurrence-id').toString(),
+          v.getFirstPropertyValue('dtstart').toString(),
+          v.getFirstPropertyValue('sequence'),
+        ]);
+    const snapshot = (ics: string) => ({ ics, recurrenceStart: 1000, recurrenceEnd: 2000 });
+    const queue = (id: string, ics: string, undoIcs?: string) =>
+      SyncbackEventTask.forUpdating({
+        event: makeEvent({ id, ics } as any),
+        undoData: undoIcs ? snapshot(undoIcs) : undefined,
+      });
+
+    it('reverts an occurrence through two undos, the second a series edit', function () {
+      // Rename the series, then move one occurrence; undoing both must bring that occurrence back
+      // to the old title, though the rename never touched it.
+      const rid = '20261009T130000Z';
+      const original = seriesIcs();
+      const renamed = seriesIcs([], '', 'Renamed series');
+      const moved = seriesIcs([[rid, '20261009T150000Z', 1]], '', 'Renamed series');
+      const rename = queue('rename-chain', renamed, original);
+      const move = queue('rename-chain', moved, renamed);
+      move.createUndoTask();
+      const undone = parseICSString(rename.createUndoTask().event.ics).root.getAllSubcomponents(
+        'vevent'
+      );
+      expect(
+        undone.map((v) => [
+          v.getFirstPropertyValue('recurrence-id')?.toString() ?? null,
+          v.getFirstPropertyValue('summary'),
+        ])
+      ).toEqual([
+        [null, 'Test series'],
+        ['2026-10-09T13:00:00Z', 'Test series'],
+      ]);
+
+      const redone = parseICSString(
+        rename.createIdenticalTask().event.ics
+      ).root.getAllSubcomponents('vevent');
+      expect(redone.map((v) => v.getFirstPropertyValue('summary'))).toEqual([
+        'Renamed series',
+        'Renamed series',
+      ]);
+    });
+
+    it('redoes the first of two undone moves at the later SEQUENCE', function () {
+      const first = queue('two-undos', eventIcs('1315', 2), SAMPLE_ICS_ORIGINAL);
+      const second = queue('two-undos', eventIcs('1330', 3), eventIcs('1315', 2));
+      second.createUndoTask();
+      first.createUndoTask();
+      expect(revisionOf(first.createIdenticalTask().event.ics)).toEqual({
+        start: '2026-10-08T13:15:00Z',
+        sequence: 3,
+      });
+    });
+
+    it('measures an undo against the undo queued before it', function () {
+      // Edit an override (SEQUENCE 1 to 2), then cancel that occurrence, then undo both. The
+      // second undo's override has no counterpart in the cancelling copy, only in the first undo.
+      const rid = '20261009T130000Z';
+      const original = seriesIcs([[rid, '20261009T150000Z', 1]]);
+      const edited = seriesIcs([[rid, '20261009T160000Z', 2]]);
+      const cancelled = seriesIcs([], rid);
+      const edit = queue('undo-chain', edited, original);
+      const cancel = queue('undo-chain', cancelled, edited);
+      cancel.createUndoTask();
+      expect(overridesOf(edit.createUndoTask().event.ics)).toEqual([
+        ['2026-10-09T13:00:00Z', '2026-10-09T15:00:00Z', 2],
+      ]);
+    });
+  });
+
   describe('createIdenticalTask()', function () {
     it('falls back to default behavior when newData is not present (forCreating path)', function () {
       const event = makeEvent({ ics: SAMPLE_ICS_NEW } as any);
@@ -742,7 +1057,7 @@ describe('SyncbackEventTask', function () {
 
       const redoTask = task.createIdenticalTask();
       // The redo task should use the snapshot, not the mutated event
-      expect(redoTask.event.ics).toBe(SAMPLE_ICS_NEW);
+      expect(revisionOf(redoTask.event.ics).start).toBe('2026-10-08T13:15:00Z');
       expect(redoTask.event.recurrenceStart).toBe(5000);
     });
 

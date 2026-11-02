@@ -1,17 +1,20 @@
 import React from 'react';
-import ReactDOM from 'react-dom';
 import { Actions, localized } from 'mailspring-exports';
-import { RetinaImg, BindGlobalCommands } from 'mailspring-component-kit';
+import { NewItemButton, BindGlobalCommands } from 'mailspring-component-kit';
 import { QuickEventPopover } from './quick-event-popover';
 
 export class QuickEventButton extends React.Component<Record<string, unknown>> {
   static displayName = 'QuickEventButton';
 
+  _button = React.createRef<HTMLButtonElement>();
+
   _openPopover = () => {
-    const el = ReactDOM.findDOMNode(this) as HTMLElement;
-    if (!el) return;
-    const buttonRect = el.getBoundingClientRect();
-    Actions.openPopover(<QuickEventPopover />, { originRect: buttonRect, direction: 'down' });
+    const button = this._button.current;
+    if (!button) return;
+    Actions.openPopover(<QuickEventPopover />, {
+      originRect: button.getBoundingClientRect(),
+      direction: 'down',
+    });
   };
 
   onClick = (event: React.MouseEvent) => {
@@ -22,20 +25,13 @@ export class QuickEventButton extends React.Component<Record<string, unknown>> {
   render() {
     return (
       <BindGlobalCommands commands={{ 'core:add-item': this._openPopover }}>
-        <button
-          style={{ order: -50 }}
+        <NewItemButton
+          buttonRef={this._button}
           tabIndex={-1}
-          className="btn btn-toolbar item-compose"
-          title={localized('Create new event')}
-          aria-label={localized('Create new event')}
+          label={localized('New Event')}
+          matchWidthOf={[localized('Compose')]}
           onClick={this.onClick}
-        >
-          <RetinaImg
-            name="toolbar-compose.png"
-            mode={RetinaImg.Mode.ContentIsMask}
-            aria-hidden="true"
-          />
-        </button>
+        />
       </BindGlobalCommands>
     );
   }

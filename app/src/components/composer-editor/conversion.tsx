@@ -25,6 +25,7 @@ import GrammarCheckPlugins from './grammar-check-plugins';
 import { Rule, ComposerEditorPlugin } from './types';
 
 import './patch-chrome-ime';
+import './patch-slate-normalizing';
 import { deepenPlaintextQuote } from './plaintext';
 
 export const schema = {
@@ -439,7 +440,8 @@ export function convertToPlainText(value: Value) {
       html = html.replace(/<br ?\/?>/g, '\n');
       html = html.replace(/<\/div ?>/g, '\n</div>');
 
-      const div = document.createElement('div');
+      // An inert document, so the quoted message's images aren't fetched
+      const div = document.implementation.createHTMLDocument('').createElement('div');
       div.innerHTML = html;
 
       // This creates a ton of extra newlines, so anywhere this more than two empty spaces

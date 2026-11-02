@@ -48,6 +48,8 @@ export interface SheetDeclaration {
   name: string;
   root: boolean;
   sidebarComponent: any;
+  /** The Back button's label on sheets pushed over this one; defaults to the mailbox name. */
+  backTitle?: () => string;
 
   Toolbar: SheetToolbarDeclaration;
   Header: { id: string };
@@ -70,7 +72,9 @@ class WorkspaceStore extends MailspringStore {
   private _preferredLayoutMode: string;
   private _hiddenLocations: { [locationId: string]: SheetLocations[''] };
   private _sheetStack: SheetDeclaration[];
+  private _stackChangeAnimates = true;
   private _shortcuts?: Disposable;
+  private _sectionLeaveGuard: (() => boolean) | null = null;
 
   constructor() {
     super();
@@ -84,6 +88,7 @@ class WorkspaceStore extends MailspringStore {
     this.listenTo(Actions.popSheet, this.popSheet);
     this.listenTo(Actions.popToRootSheet, this.popToRootSheet);
     this.listenTo(Actions.pushSheet, this.pushSheet);
+    this.listenTo(Actions.showSheetStack, this._onShowSheetStack);
 
     const { windowType } = AppEnv.getLoadSettings();
 
@@ -149,11 +154,34 @@ class WorkspaceStore extends MailspringStore {
     if (!sheet.root) {
       throw new Error(`Actions.selectRootSheet - ${sheet} is not registered as a root sheet.`);
     }
+    if (!this._mayLeaveSectionFor(sheet)) return;
 
     this._sheetStack = [];
     this._sheetStack.push(sheet);
-    this.trigger(this);
+    // Switching sections drops the old section's pushed sheets at once. Fading them out
+    // leaves their toolbar, re-rendered for a layout mode it has no columns in, as a blank
+    // bar over the new section's toolbar and window controls.
+    this._triggerUnanimated();
   };
+
+  _onShowSheetStack = (sheets: SheetDeclaration[]) => {
+    if (!sheets[0] || !sheets[0].root) {
+      throw new Error(`Actions.showSheetStack - the first sheet must be a root sheet.`);
+    }
+    if (!this._mayLeaveSectionFor(sheets[0])) return;
+    this._sheetStack = [...sheets];
+    this._triggerUnanimated();
+  };
+
+  // Listeners run synchronously, so the flag covers exactly this one trigger.
+  _triggerUnanimated() {
+    this._stackChangeAnimates = false;
+    try {
+      this.trigger(this);
+    } finally {
+      this._stackChangeAnimates = true;
+    }
+  }
 
   _onToggleLocationHidden = (location: SheetLocations['']) => {
     if (!location.id) {
@@ -269,10 +297,26 @@ class WorkspaceStore extends MailspringStore {
     return this._sheetStack[0];
   }
 
+  /** Asked before another section is shown; returning false keeps the current one. */
+  setSectionLeaveGuard(guard: (() => boolean) | null) {
+    this._sectionLeaveGuard = guard;
+  }
+
+  _mayLeaveSectionFor(sheet: SheetDeclaration) {
+    return sheet === this.rootSheet() || this._sectionLeaveGuard?.() !== false;
+  }
+
   // Public: Returns an {Array<Sheet>} The stack of sheets
   //
   sheetStack() {
     return this._sheetStack;
+  }
+
+  // Public: Returns false while observers handle a stack change that should appear without
+  // the push and pop animations.
+  //
+  stackChangeAnimates() {
+    return this._stackChangeAnimates;
   }
 
   // Public: Returns an {Array} of locations that have been hidden.
@@ -294,6 +338,15 @@ class WorkspaceStore extends MailspringStore {
   Managing Sheets
   */
 
+  // Returns the location for a column, creating it if needed, so a package can register
+  // into another package's column regardless of which activates first.
+  defineLocation(col: string) {
+    if (Location[col] == null) {
+      Location[col] = { id: `${col}`, Toolbar: { id: `${col}:Toolbar` } };
+    }
+    return Location[col];
+  }
+
   // * `id` {String} The ID of the Sheet being defined.
   // * `options` {Object} If the sheet should be listed in the left sidebar,
   //      pass `{root: true, name: 'Label'}`.
@@ -314,6 +367,7 @@ class WorkspaceStore extends MailspringStore {
       name: options.name,
       root: options.root,
       sidebarComponent: options.sidebarComponent,
+      backTitle: options.backTitle,
 
       Toolbar: {
         Left: { id: `Sheet:${id}:Toolbar:Left` },
@@ -328,10 +382,7 @@ class WorkspaceStore extends MailspringStore {
     for (const [mode, cols] of Object.entries(columns)) {
       Sheet[id].columns[mode] = [];
       for (const col of cols) {
-        if (Location[col] == null) {
-          Location[col] = { id: `${col}`, Toolbar: { id: `${col}:Toolbar` } };
-        }
-        Sheet[id].columns[mode].push(Location[col]);
+        Sheet[id].columns[mode].push(this.defineLocation(col));
       }
     }
 

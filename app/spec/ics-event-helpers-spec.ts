@@ -1,5 +1,16 @@
 import ICAL from 'ical.js';
 import * as ICSEventHelpers from '../src/ics-event-helpers';
+import { parseICSString } from '../src/calendar-utils';
+
+/**
+ * `ics` with zone `tz` renamed to a TZID tzdata does not know. parseICSString reads a name tzdata
+ * knows through tzdata whatever VTIMEZONE the object carries, so a spec of a written component
+ * reads its times back under this name, through the component alone.
+ */
+function underUnknownName(ics: string, tz: string): string {
+  const escaped = tz.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return ics.replace(new RegExp(`TZID([:=])${escaped}(?=[:;\\r\\n])`, 'g'), `TZID$1Body of ${tz}`);
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -267,6 +278,19 @@ describe('ICSEventHelpers.createRecurrenceException', function () {
     expect(/^\d{8}$/.test(recurrenceId)).toBe(true);
   });
 
+  it("keeps a timed series' RECURRENCE-ID a date-time when one occurrence becomes all-day", function () {
+    const { masterIcs, recurrenceId } = ICSEventHelpers.createRecurrenceException(
+      DAILY_STANDUP_ICS,
+      T_OCC2_START,
+      new Date(2026, 2, 2).getTime() / 1000,
+      new Date(2026, 2, 3).getTime() / 1000,
+      true
+    );
+    expect(recurrenceId).toBe('20260302T060000Z');
+    expect(masterIcs).toContain('RECURRENCE-ID:20260302T060000Z');
+    expect(masterIcs).toContain('DTSTART;VALUE=DATE:20260302');
+  });
+
   it('embeds a RECURRENCE-ID property inside the returned masterIcs', function () {
     const { masterIcs } = ICSEventHelpers.createRecurrenceException(
       DAILY_STANDUP_ICS,
@@ -372,7 +396,7 @@ describe('ICSEventHelpers.createRecurrenceException', function () {
   // Timezone-aware upsert: TZID-format vs UTC-format RECURRENCE-ID
   // -------------------------------------------------------------------------
   // Regression test for the bug where re-editing a TZID-formatted exception
-  // left a duplicate VEVENT in the ICS, causing ical-expander to pick the old
+  // left a duplicate VEVENT in the ICS, causing the expansion to pick the old
   // one (with the stale summary) and ignore the new one.
   //
   // Root cause: the old string comparison
@@ -418,7 +442,7 @@ describe('ICSEventHelpers.createRecurrenceException', function () {
 
     it('applying a summary edit via applyEditsToException updates only the new exception', function () {
       // This is the exact user-reported scenario: editing the summary of a
-      // TZID-format exception should produce an ICS where ical-expander
+      // TZID-format exception should produce an ICS whose expansion
       // displays the *new* summary, not the old one.
       const { masterIcs, recurrenceId } = ICSEventHelpers.createRecurrenceException(
         RECURRING_WITH_TZID_EXCEPTION_ICS,
@@ -523,6 +547,130 @@ END:VEVENT`;
 // shiftInlineExceptions
 // ---------------------------------------------------------------------------
 
+describe('ICSEventHelpers.removeInlineException', function () {
+  let masterWithException: string;
+  let recurrenceId: string;
+
+  beforeEach(function () {
+    const result = ICSEventHelpers.createRecurrenceException(
+      DAILY_STANDUP_ICS,
+      T_OCC2_START,
+      T_NEW_START,
+      T_NEW_END,
+      false
+    );
+    masterWithException = result.masterIcs;
+    recurrenceId = result.recurrenceId;
+  });
+
+  it('removes the overriding VEVENT', function () {
+    const veventCount = (ics: string) => (ics.match(/BEGIN:VEVENT/g) || []).length;
+    expect(veventCount(masterWithException)).toBe(2);
+
+    const result = ICSEventHelpers.removeInlineException(masterWithException, recurrenceId);
+
+    expect(veventCount(result)).toBe(1);
+    expect(result).not.toContain('RECURRENCE-ID');
+  });
+
+  it('excludes the slot as well, so the rule does not put the meeting back', function () {
+    const result = ICSEventHelpers.removeInlineException(masterWithException, recurrenceId);
+
+    const exdate = (/^EXDATE[^:]*:(.*)$/im.exec(result) || [])[1];
+    expect(exdate).toBeDefined();
+    const toUnix = (v: string) =>
+      Date.parse(
+        v.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z?$/, '$1-$2-$3T$4:$5:$6Z')
+      );
+    expect(toUnix(exdate)).toBe(toUnix(recurrenceId));
+  });
+
+  it('keeps the series rule intact', function () {
+    const result = ICSEventHelpers.removeInlineException(masterWithException, recurrenceId);
+    expect(result).toContain('RRULE');
+  });
+
+  it('leaves SEQUENCE to the caller, who revises once for the whole cancellation', function () {
+    const result = ICSEventHelpers.removeInlineException(masterWithException, recurrenceId);
+    expect(result).toContain('SEQUENCE:0');
+    expect(result).not.toContain('SEQUENCE:1');
+  });
+
+  it('returns the ICS unchanged when no exception matches', function () {
+    const result = ICSEventHelpers.removeInlineException(masterWithException, '20991231T060000Z');
+    expect(result).toBe(masterWithException);
+  });
+
+  describe('with a zoned RECURRENCE-ID', function () {
+    // The row stores '20260917T170000' with no zone; the zone is on the property. The runner
+    // pins America/Chicago, so reading the text in the machine's zone would miss by seven hours.
+    const VIENNA_WITH_EXCEPTION = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Test//Test//EN',
+      'BEGIN:VTIMEZONE',
+      'TZID:Europe/Vienna',
+      'BEGIN:DAYLIGHT',
+      'TZOFFSETFROM:+0100',
+      'TZOFFSETTO:+0200',
+      'TZNAME:CEST',
+      'DTSTART:19700329T020000',
+      'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU',
+      'END:DAYLIGHT',
+      'BEGIN:STANDARD',
+      'TZOFFSETFROM:+0200',
+      'TZOFFSETTO:+0100',
+      'TZNAME:CET',
+      'DTSTART:19701025T030000',
+      'RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU',
+      'END:STANDARD',
+      'END:VTIMEZONE',
+      'BEGIN:VEVENT',
+      'UID:vienna-series@test',
+      'DTSTART;TZID=Europe/Vienna:20260903T170000',
+      'DTEND;TZID=Europe/Vienna:20260903T173000',
+      'RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TH',
+      'EXDATE;TZID=Europe/Vienna:20261001T170000',
+      'SUMMARY:management sync',
+      'DTSTAMP:20260101T000000Z',
+      'SEQUENCE:2',
+      'END:VEVENT',
+      'BEGIN:VEVENT',
+      'UID:vienna-series@test',
+      'RECURRENCE-ID;TZID=Europe/Vienna:20260917T170000',
+      'DTSTART;TZID=Europe/Vienna:20260924T170000',
+      'DTEND;TZID=Europe/Vienna:20260924T173000',
+      'SUMMARY:management sync',
+      'DTSTAMP:20260101T000000Z',
+      'SEQUENCE:2',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+    it('writes the EXDATE as the same wall-clock time in the same zone', function () {
+      const result = ICSEventHelpers.removeInlineException(
+        VIENNA_WITH_EXCEPTION,
+        '20260917T170000'
+      );
+
+      expect(result).not.toContain('RECURRENCE-ID');
+      expect(result).toContain('EXDATE;TZID=Europe/Vienna:20260917T170000');
+      // The exclusion that was already there survives untouched.
+      expect(result).toContain('EXDATE;TZID=Europe/Vienna:20261001T170000');
+    });
+
+    it('also matches the slot when the row stores it as UTC', function () {
+      // 17:00 CEST is 15:00Z.
+      const result = ICSEventHelpers.removeInlineException(
+        VIENNA_WITH_EXCEPTION,
+        '20260917T150000Z'
+      );
+      expect(result).not.toContain('RECURRENCE-ID');
+      expect(result).toContain('EXDATE;TZID=Europe/Vienna:20260917T170000');
+    });
+  });
+});
+
 describe('ICSEventHelpers.shiftInlineExceptions', function () {
   let masterIcsWithException: string;
   let originalRecurrenceId: string;
@@ -542,6 +690,90 @@ describe('ICSEventHelpers.shiftInlineExceptions', function () {
   it('returns the ICS unchanged when deltaMs is 0', function () {
     const result = ICSEventHelpers.shiftInlineExceptions(masterIcsWithException, 0);
     expect(result).toBe(masterIcsWithException);
+  });
+
+  // An EXDATE left behind after the rule moves matches nothing, so the cancelled occurrence
+  // comes back.
+  it('shifts the master EXDATEs with the series', function () {
+    const withExclusion = ICSEventHelpers.addExclusionDate(DAILY_STANDUP_ICS, T_OCC2_START, false);
+    const exdateOf = (ics: string) => (/^EXDATE[^:]*:(.*)$/im.exec(ics) || [])[1];
+    const before = exdateOf(withExclusion);
+    expect(before).toBeDefined();
+
+    const HALF_HOUR = 30 * 60 * 1000;
+    const shifted = ICSEventHelpers.shiftInlineExceptions(withExclusion, HALF_HOUR);
+    const after = exdateOf(shifted);
+
+    expect(after).toBeDefined();
+    expect(after).not.toBe(before);
+    // The excluded instant moved by exactly the same delta as the series.
+    const toUnix = (v: string) =>
+      Date.parse(
+        v.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z?$/, '$1-$2-$3T$4:$5:$6Z')
+      );
+    expect(toUnix(after) - toUnix(before)).toBe(HALF_HOUR);
+  });
+
+  it('leaves an ICS with no EXDATE untouched apart from the exception', function () {
+    const shifted = ICSEventHelpers.shiftInlineExceptions(masterIcsWithException, 60 * 60 * 1000);
+    expect(/EXDATE/i.test(shifted)).toBe(false);
+  });
+
+  it('keeps zoned RECURRENCE-IDs and EXDATEs in their zone rather than writing UTC under a TZID', function () {
+    // Both properties carry TZID=Europe/Vienna, so a shifted value has to stay wall-clock in
+    // that zone rather than becoming UTC under the parameter.
+    const VIENNA = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Test//Test//EN',
+      'BEGIN:VTIMEZONE',
+      'TZID:Europe/Vienna',
+      'BEGIN:DAYLIGHT',
+      'TZOFFSETFROM:+0100',
+      'TZOFFSETTO:+0200',
+      'TZNAME:CEST',
+      'DTSTART:19700329T020000',
+      'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU',
+      'END:DAYLIGHT',
+      'BEGIN:STANDARD',
+      'TZOFFSETFROM:+0200',
+      'TZOFFSETTO:+0100',
+      'TZNAME:CET',
+      'DTSTART:19701025T030000',
+      'RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU',
+      'END:STANDARD',
+      'END:VTIMEZONE',
+      'BEGIN:VEVENT',
+      'UID:vienna-series@test',
+      'DTSTART;TZID=Europe/Vienna:20260903T170000',
+      'DTEND;TZID=Europe/Vienna:20260903T173000',
+      'RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TH',
+      'EXDATE;TZID=Europe/Vienna:20261001T170000',
+      'EXDATE;TZID=Europe/Vienna:20261029T170000',
+      'SUMMARY:management sync',
+      'DTSTAMP:20260101T000000Z',
+      'SEQUENCE:2',
+      'END:VEVENT',
+      'BEGIN:VEVENT',
+      'UID:vienna-series@test',
+      'RECURRENCE-ID;TZID=Europe/Vienna:20260917T170000',
+      'DTSTART;TZID=Europe/Vienna:20260924T170000',
+      'DTEND;TZID=Europe/Vienna:20260924T173000',
+      'SUMMARY:management sync',
+      'DTSTAMP:20260101T000000Z',
+      'SEQUENCE:2',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+    const shifted = ICSEventHelpers.shiftInlineExceptions(VIENNA, 15 * 60 * 1000);
+
+    expect(shifted).toContain('RECURRENCE-ID;TZID=Europe/Vienna:20260917T171500');
+    // One exclusion in summer time and one after the clocks go back: both move by exactly a
+    // quarter of an hour on the wall clock, which is what "the same delta as the series" means.
+    expect(shifted).toContain('EXDATE;TZID=Europe/Vienna:20261001T171500');
+    expect(shifted).toContain('EXDATE;TZID=Europe/Vienna:20261029T171500');
+    expect(shifted).not.toMatch(/TZID=Europe\/Vienna:\d{8}T\d{6}Z/);
   });
 
   describe('with a DATE-valued RECURRENCE-ID', function () {
@@ -681,18 +913,11 @@ describe('ICSEventHelpers.addExclusionDate', function () {
     expect(hasProperty(result, 'RRULE')).toBe(true);
   });
 
-  it('increments SEQUENCE when the property is present', function () {
+  it('leaves SEQUENCE to the caller', function () {
+    // Excluding an occurrence is one part of a revision; the caller revises once.
     const result = ICSEventHelpers.addExclusionDate(DAILY_STANDUP_ICS, T_OCC2_START, false);
     const seqValue = getPropertyValue(result, 'SEQUENCE');
-    expect(seqValue ? parseInt(seqValue, 10) : 0).toBe(1);
-  });
-
-  it('does not increment SEQUENCE when the property is absent', function () {
-    // ICS without SEQUENCE
-    const noSeqIcs = DAILY_STANDUP_ICS.replace(/\r?\nSEQUENCE:0/g, '');
-    const result = ICSEventHelpers.addExclusionDate(noSeqIcs, T_OCC2_START, false);
-    // Should not crash, and no SEQUENCE should appear
-    expect(result).toBeDefined();
+    expect(seqValue ? parseInt(seqValue, 10) : 0).toBe(0);
   });
 
   it('handles all-day events (DATE value format)', function () {
@@ -1062,7 +1287,7 @@ describe('ICSEventHelpers.updateEventTimes with all-day events', function () {
 });
 
 // ---------------------------------------------------------------------------
-// Expansion budget. ical-expander iterates forward from DTSTART with no way to seek, so a
+// Expansion budget. expandBetween iterates forward from DTSTART with no way to seek, so a
 // fixed cap is a limit on how far back a series may begin. At 100 a weekly meeting older
 // than about two years expanded to nothing and disappeared from the calendar.
 // ---------------------------------------------------------------------------
@@ -1130,8 +1355,7 @@ describe('ICSEventHelpers.expansionIterationBudget', function () {
 
   it('returns the floor when the series has no usable start', function () {
     // recurrenceStart can be null or non-finite. A NaN budget is worse than a small one:
-    // it survives Math.max/Math.min and ical-expander reads `!this.maxIterations` as no cap,
-    // so an abusive rule iterates unbounded instead of being truncated.
+    // it survives Math.max/Math.min, and a cap compared with NaN is no cap at all.
     // Passed positionally rather than through budgetFor, whose defaults would swallow
     // undefined and quietly test a finite start instead.
     const abusive = series('FREQ=SECONDLY');
@@ -1157,5 +1381,2185 @@ describe('ICSEventHelpers.expansionIterationBudget', function () {
     const ics = series('FREQ=WEEKLY').replace('\r\nRRULE:FREQ=WEEKLY', '');
     expect(/BEGIN:VEVENT[\s\S]*RRULE:/.test(ics)).toBe(false);
     expect(ICSEventHelpers.expansionIterationBudget(ics, START, NOW)).toBe(FLOOR);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DTSTAMP
+// ---------------------------------------------------------------------------
+
+describe('every helper that writes DTSTAMP writes it in UTC', function () {
+  // RFC 5545 section 3.8.7.2: DTSTAMP MUST be specified in UTC. A floating value has no Z and
+  // no zone, so a receiving client cannot tell when the change was made.
+  const UTC_DATE_TIME = /^\d{8}T\d{6}Z$/;
+  const stamps = (ics: string) => (ics.match(/^DTSTAMP:(.*)$/gm) || []).map((l) => l.slice(8));
+
+  const exception = () =>
+    ICSEventHelpers.createRecurrenceException(
+      DAILY_STANDUP_ICS,
+      T_OCC2_START,
+      T_NEW_START,
+      T_NEW_END,
+      false
+    );
+
+  const cases: Array<[string, () => string]> = [
+    [
+      'createICSString',
+      () =>
+        ICSEventHelpers.createICSString({
+          uid: 'stamp@test',
+          summary: 'Stamp',
+          start: new Date('2026-08-17T15:00:00.000Z'),
+          end: new Date('2026-08-17T16:00:00.000Z'),
+          timezone: 'America/Chicago',
+        }),
+    ],
+    [
+      'updateEventTimes',
+      () =>
+        ICSEventHelpers.updateEventTimes(DAILY_STANDUP_ICS, {
+          start: T_MASTER_START + 3600,
+          end: T_MASTER_START + 7200,
+        }),
+    ],
+    ['createRecurrenceException', () => exception().masterIcs],
+    [
+      'applyEditsToException',
+      () => {
+        const { masterIcs, recurrenceId } = exception();
+        return ICSEventHelpers.applyEditsToException(masterIcs, recurrenceId, { summary: 'Moved' });
+      },
+    ],
+    [
+      'shiftInlineExceptions',
+      () => ICSEventHelpers.shiftInlineExceptions(exception().masterIcs, 900000),
+    ],
+    [
+      'removeInlineException',
+      () => {
+        const { masterIcs, recurrenceId } = exception();
+        const result = ICSEventHelpers.removeInlineException(masterIcs, recurrenceId);
+        // A no-match returns the input untouched, whose stamps are already UTC.
+        expect(result).not.toEqual(masterIcs);
+        return result;
+      },
+    ],
+    [
+      'updateRecurringEventTimes',
+      () =>
+        ICSEventHelpers.updateRecurringEventTimes(
+          DAILY_STANDUP_ICS,
+          T_OCC2_START,
+          T_OCC2_START + 900,
+          T_OCC2_START + 4500,
+          false
+        ),
+    ],
+    [
+      'addExclusionDate',
+      () => ICSEventHelpers.addExclusionDate(DAILY_STANDUP_ICS, T_OCC2_START, false),
+    ],
+    [
+      'updateRecurrenceRule',
+      () => ICSEventHelpers.updateRecurrenceRule(DAILY_STANDUP_ICS, 'FREQ=WEEKLY'),
+    ],
+    [
+      'updateAttendees',
+      () => ICSEventHelpers.updateAttendees(DAILY_STANDUP_ICS, [{ email: 'a@example.com' }]),
+    ],
+    [
+      'updateEventProperty',
+      () => ICSEventHelpers.updateEventProperty(DAILY_STANDUP_ICS, 'summary', 'Renamed'),
+    ],
+  ];
+
+  for (const [name, run] of cases) {
+    it(name, function () {
+      const found = stamps(run());
+      expect(found.length).toBeGreaterThan(0);
+      for (const value of found) {
+        expect(value).toMatch(UTC_DATE_TIME);
+      }
+    });
+  }
+});
+
+describe('a TZID whose VTIMEZONE the server omitted', function () {
+  // RFC 7809 lets a server leave the VTIMEZONE out for an IANA zone; every value below still
+  // carries TZID=Europe/Vienna. The runner is pinned to America/Chicago, where a floating 17:00
+  // is 22:00Z; Vienna's 17:00 on 17 September is 15:00Z.
+  const VIENNA_NO_VTIMEZONE = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Test//Test//EN',
+    'BEGIN:VEVENT',
+    'UID:vienna-series@test',
+    'DTSTART;TZID=Europe/Vienna:20260903T170000',
+    'DTEND;TZID=Europe/Vienna:20260903T173000',
+    'RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TH',
+    'EXDATE;TZID=Europe/Vienna:20261001T170000',
+    'SUMMARY:management sync',
+    'DTSTAMP:20260101T000000Z',
+    'SEQUENCE:2',
+    'END:VEVENT',
+    'BEGIN:VEVENT',
+    'UID:vienna-series@test',
+    'RECURRENCE-ID;TZID=Europe/Vienna:20260917T170000',
+    'DTSTART;TZID=Europe/Vienna:20260924T170000',
+    'DTEND;TZID=Europe/Vienna:20260924T173000',
+    'SUMMARY:management sync',
+    'DTSTAMP:20260101T000000Z',
+    'SEQUENCE:2',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+  const QUARTER_HOUR = 15 * 60 * 1000;
+
+  beforeEach(function () {
+    // Registrations are process-wide, so a fixture in another spec must not stand in for this one.
+    ICAL.TimezoneService.remove('Europe/Vienna');
+    expect(ICAL.TimezoneService.has('Europe/Vienna')).toBe(false);
+  });
+
+  it('shifts a zoned RECURRENCE-ID and EXDATE on their own wall clock', function () {
+    const shifted = ICSEventHelpers.shiftInlineExceptions(VIENNA_NO_VTIMEZONE, QUARTER_HOUR);
+    expect(shifted).toContain('RECURRENCE-ID;TZID=Europe/Vienna:20260917T171500');
+    expect(shifted).toContain('EXDATE;TZID=Europe/Vienna:20261001T171500');
+    expect(shifted).not.toMatch(/TZID=Europe\/Vienna:\d{8}T\d{6}Z/);
+  });
+
+  it('reads a zoned RECURRENCE-ID as the instant it names', function () {
+    // The row stores the exception's RECURRENCE-ID in UTC, so this only matches when 17:00
+    // Vienna is read as 15:00Z rather than as 17:00 wherever the machine is.
+    const result = ICSEventHelpers.removeInlineException(VIENNA_NO_VTIMEZONE, '20260917T150000Z');
+    expect(result).not.toContain('RECURRENCE-ID');
+    expect(result).toContain('EXDATE;TZID=Europe/Vienna:20260917T170000');
+  });
+
+  it('reads a zone tzdata knows through tzdata, not through a VTIMEZONE that disagrees', function () {
+    // A deliberately wrong zone in the file: Europe/Vienna at a fixed +05:00, which would make
+    // 17:00 12:00Z. tzdata's Vienna makes it 15:00Z.
+    const WRONG_OFFSET = VIENNA_NO_VTIMEZONE.replace(
+      'BEGIN:VEVENT',
+      [
+        'BEGIN:VTIMEZONE',
+        'TZID:Europe/Vienna',
+        'BEGIN:STANDARD',
+        'DTSTART:19700101T000000',
+        'TZOFFSETFROM:+0500',
+        'TZOFFSETTO:+0500',
+        'END:STANDARD',
+        'END:VTIMEZONE',
+        'BEGIN:VEVENT',
+      ].join('\r\n')
+    );
+    expect(ICSEventHelpers.removeInlineException(WRONG_OFFSET, '20260917T120000Z')).toContain(
+      'RECURRENCE-ID'
+    );
+    expect(ICSEventHelpers.removeInlineException(WRONG_OFFSET, '20260917T150000Z')).not.toContain(
+      'RECURRENCE-ID'
+    );
+  });
+
+  it('leaves a TZID moment-timezone does not know exactly as it arrived', function () {
+    const UNKNOWN = VIENNA_NO_VTIMEZONE.replace(/Europe\/Vienna/g, 'Mars/Olympus_Mons');
+    expect(() => ICSEventHelpers.shiftInlineExceptions(UNKNOWN, QUARTER_HOUR)).not.toThrow();
+    expect(ICAL.TimezoneService.has('Mars/Olympus_Mons')).toBe(false);
+  });
+});
+
+describe('a VTIMEZONE that redefines UTC', function () {
+  const withZoneAt = (tzid: string, offset: string, uid: string) =>
+    [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Test//Test//EN',
+      'BEGIN:VTIMEZONE',
+      `TZID:${tzid}`,
+      'BEGIN:STANDARD',
+      'DTSTART:19700101T000000',
+      `TZOFFSETFROM:${offset}`,
+      `TZOFFSETTO:${offset}`,
+      `TZNAME:${tzid}`,
+      'END:STANDARD',
+      'END:VTIMEZONE',
+      'BEGIN:VEVENT',
+      `UID:${uid}@test`,
+      `DTSTART;TZID=${tzid}:20240115T150000`,
+      `DTEND;TZID=${tzid}:20240115T160000`,
+      'SUMMARY:Invitation',
+      'DTSTAMP:20240101T000000Z',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+  let originalUTC: InstanceType<typeof ICAL.Timezone>;
+
+  beforeEach(function () {
+    originalUTC = ICAL.TimezoneService.get('UTC');
+  });
+
+  afterEach(function () {
+    for (const name of ['UTC', 'GMT', 'Z']) ICAL.TimezoneService.register(originalUTC, name);
+  });
+
+  // ical.js registers each of these as UTC itself, and its registry outlives the file.
+  for (const tzid of ['UTC', 'GMT', 'Z']) {
+    it(`is not registered for ${tzid}, and leaves later ${tzid} times where they were`, function () {
+      parseICSString(withZoneAt(tzid, '+0500', `hostile-${tzid}`));
+      const midnight = new ICAL.Time(
+        { year: 2024, month: 1, day: 1, hour: 0, minute: 0, second: 0, isDate: false },
+        ICAL.Timezone.utcTimezone
+      );
+      expect(ICAL.TimezoneService.get(tzid).utcOffset(midnight)).toBe(0);
+      const { event } = parseICSString(withZoneAt(tzid, '+0000', `later-${tzid}`));
+      expect(event.startDate.toJSDate().toISOString()).toBe('2024-01-15T15:00:00.000Z');
+    });
+  }
+});
+
+describe('ICSEventHelpers.createVTIMEZONEString', function () {
+  const lines = (tz: string, when: string) =>
+    ICSEventHelpers.createVTIMEZONEString(tz, new Date(when)).split('\r\n');
+  const rules = (l: string[]) => l.filter((x) => x.startsWith('RRULE:')).sort();
+
+  it('describes both halves of a zone that observes DST', function () {
+    const l = lines('America/Chicago', '2024-01-15T12:00:00Z');
+    expect(l).toContain('TZID:America/Chicago');
+    expect(l).toContain('BEGIN:STANDARD');
+    expect(l).toContain('BEGIN:DAYLIGHT');
+    expect(l).toContain('TZOFFSETTO:-0600');
+    expect(l).toContain('TZOFFSETTO:-0500');
+    expect(rules(l)).toEqual([
+      'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU',
+      'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU',
+    ]);
+  });
+
+  it('gives the same rules whichever side of a transition it is asked about', function () {
+    const winter = lines('America/Chicago', '2024-01-15T12:00:00Z');
+    const summer = lines('America/Chicago', '2024-07-15T12:00:00Z');
+    expect(rules(winter)).toEqual(rules(summer));
+  });
+
+  it('states each transition at the wall clock it happens, in the offset being left', function () {
+    // Chicago changes at 02:00 both ways (RFC 5545 section 3.6.5: DTSTART is read in
+    // TZOFFSETFROM). Reading it in the new offset would put both changes an hour late.
+    const l = lines('America/Chicago', '2024-01-15T12:00:00Z');
+    const daylight = l.slice(l.indexOf('BEGIN:DAYLIGHT'), l.indexOf('END:DAYLIGHT'));
+    const standard = l.slice(l.indexOf('BEGIN:STANDARD'), l.indexOf('END:STANDARD'));
+    expect(daylight.find((x) => x.startsWith('DTSTART:'))).toMatch(/T020000$/);
+    expect(daylight).toContain('TZOFFSETFROM:-0600');
+    expect(standard.find((x) => x.startsWith('DTSTART:'))).toMatch(/T020000$/);
+    expect(standard).toContain('TZOFFSETFROM:-0500');
+  });
+
+  it('anchors each rule in 1970, as the shipped zone database does', function () {
+    // ical.js matches a date before the earliest DTSTART to no rule and reads its wall clock as
+    // UTC, so a rule anchored at the reference year's own transition leaves every earlier date
+    // in the year unresolved. These are the lines ical-expander's zones-compiled.json carries.
+    const l = lines('America/Chicago', '2024-07-15T12:00:00Z');
+    expect(l).toContain('DTSTART:19700308T020000');
+    expect(l).toContain('DTSTART:19701101T020000');
+    expect(lines('Europe/Berlin', '2024-07-15T12:00:00Z')).toContain('DTSTART:19700329T020000');
+  });
+
+  it("writes the EU's last-Sunday transitions as BYDAY=-1SU", function () {
+    // Berlin switches on the last Sunday of March and October, the fifth Sunday in some years
+    // and the fourth in others, so a positive ordinal would stop matching.
+    expect(rules(lines('Europe/Berlin', '2024-07-15T12:00:00Z'))).toEqual([
+      'RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU',
+      'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU',
+    ]);
+  });
+
+  it('writes a southern-hemisphere zone with DAYLIGHT later in the year', function () {
+    const l = lines('Australia/Sydney', '2024-07-15T12:00:00Z');
+    const daylight = l.slice(l.indexOf('BEGIN:DAYLIGHT'), l.indexOf('END:DAYLIGHT'));
+    expect(daylight).toContain('TZOFFSETTO:+1100');
+    expect(daylight).toContain('RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=1SU');
+    expect(l).toContain('TZOFFSETTO:+1000');
+  });
+
+  // A component is only as good as what a reader computes from it, so these read a date back
+  // through it rather than matching its lines.
+  const readThrough = (tz: string, reference: string, stamp: string) => {
+    const { event } = parseICSString(
+      underUnknownName(
+        [
+          'BEGIN:VCALENDAR',
+          'VERSION:2.0',
+          ICSEventHelpers.createVTIMEZONEString(tz, new Date(reference)),
+          'BEGIN:VEVENT',
+          'UID:read-through@test',
+          `DTSTART;TZID=${tz}:${stamp}`,
+          'SUMMARY:Meeting',
+          'DTSTAMP:20240101T000000Z',
+          'END:VEVENT',
+          'END:VCALENDAR',
+        ].join('\r\n'),
+        tz
+      )
+    );
+    return event.startDate.toJSDate().toISOString();
+  };
+
+  it('holds a zone that stopped changing its clocks at the offset it settled on', function () {
+    // The transitions either side of June 2014 in Europe/Moscow are three and a half years
+    // apart: the 2011 move to permanent summer time and the 2014 move back. Read as a DST pair
+    // they give the zone perpetual summer time it has not observed since 2011.
+    expect(readThrough('Europe/Moscow', '2014-06-15', '20140615T090000')).toBe(
+      '2014-06-15T05:00:00.000Z'
+    );
+    // MSK has been a fixed +03:00 since that second move, so 09:00 in 2024 is 06:00Z.
+    expect(readThrough('Europe/Moscow', '2014-06-15', '20240715T090000')).toBe(
+      '2024-07-15T06:00:00.000Z'
+    );
+  });
+
+  it('stops a zone that abolished DST at its last transition', function () {
+    // America/Mexico_City's 2022 pair is a genuine DST year, and its last. Unbounded rules put
+    // every later summer on CDT: 09:00 in July 2023 is 15:00Z at CST's -06:00, 14:00Z at CDT's.
+    expect(readThrough('America/Mexico_City', '2022-06-15', '20230715T090000')).toBe(
+      '2023-07-15T15:00:00.000Z'
+    );
+  });
+
+  it('bounds the rules of an era that ended after the reference', function () {
+    // October 2020 sits inside America/Mexico_City's last DST era, two years before it ended, so
+    // the transitions either side of it are a close pair with a successor. Left unbounded they
+    // repeat forever: 09:00 in July 2024 is 15:00Z at the CST the zone has kept, 14:00Z at CDT.
+    expect(readThrough('America/Mexico_City', '2020-10-15', '20240715T090000')).toBe(
+      '2024-07-15T15:00:00.000Z'
+    );
+  });
+
+  it('writes each permanent offset change after the era as its own observance', function () {
+    // Europe/Moscow's DST ended in March 2011 at +04:00, and October 2014 moved it to +03:00.
+    // Both are single transitions, not halves of a DST year: 09:00 in 2012 is 05:00Z, in 2024
+    // 06:00Z. Bounding the 2009 rules alone would hold +04:00 to this day.
+    expect(readThrough('Europe/Moscow', '2009-07-15', '20120715T090000')).toBe(
+      '2012-07-15T05:00:00.000Z'
+    );
+    expect(readThrough('Europe/Moscow', '2009-07-15', '20240715T090000')).toBe(
+      '2024-07-15T06:00:00.000Z'
+    );
+  });
+
+  it('describes a DST era that begins after the reference', function () {
+    // Africa/Cairo observed no DST from 2015 to 2022 and resumed in April 2023. A reference in
+    // that gap is one fixed +02:00; 09:00 EEST in July 2024 is 06:00Z, 07:00Z at the fixed offset.
+    expect(readThrough('Africa/Cairo', '2018-07-15', '20240715T090000')).toBe(
+      '2024-07-15T06:00:00.000Z'
+    );
+  });
+
+  it('describes an era still observing DST by the rule it settled on', function () {
+    // The US moved its spring transition from the first Sunday of April to the second of March
+    // in 2007. A series created in 2005 and still running needs the rule in force today, as the
+    // shipped zone database writes it: 09:00 CDT on 20 March 2024 is 14:00Z, and 15:00Z under the
+    // 2005 rule, which has that date on standard time.
+    expect(readThrough('America/Chicago', '2005-07-15', '20240320T090000')).toBe(
+      '2024-03-20T14:00:00.000Z'
+    );
+  });
+
+  it('describes a later era by the rule it settled on rather than its first year', function () {
+    // America/Indiana/Vincennes had no DST in 2005, spent 2006 on Central time and settled on
+    // Eastern in 2007. Its first year's pair puts every later summer at CDT: 09:00 EDT in July
+    // 2024 is 13:00Z, 14:00Z at CDT.
+    expect(readThrough('America/Indiana/Vincennes', '2005-07-15', '20240715T090000')).toBe(
+      '2024-07-15T13:00:00.000Z'
+    );
+  });
+
+  it('lets a rule whose date drifted in its final year fire before the era ends', function () {
+    // America/Asuncion's last change to standard time fell on 24 March 2024, while the rule its
+    // 2023 date gives, the last Sunday of March, says the 31st. Bounded at the 24th that rule
+    // never fires and the zone stays on summer time until DST is abolished that October: 09:00 in
+    // June 2024 is 13:00Z at -04:00, 12:00Z at -03:00.
+    expect(readThrough('America/Asuncion', '2022-10-15', '20240615T090000')).toBe(
+      '2024-06-15T13:00:00.000Z'
+    );
+  });
+
+  it('keeps a DST year whole across a rename in the middle of it', function () {
+    // America/Ciudad_Juarez's summer of 2022 was MDT until October and CST, the same -06:00,
+    // until it joined US rules that November. Read as a transition, the rename ends the era in
+    // March 2022 and the sliver after it seeds a rule pair with no year behind it: 09:00 MDT in
+    // July 2024 is 15:00Z, and reads 16:00Z.
+    expect(readThrough('America/Ciudad_Juarez', '2010-07-15', '20240715T090000')).toBe(
+      '2024-07-15T15:00:00.000Z'
+    );
+  });
+
+  it('writes whole minutes for an era whose offset has seconds in it', function () {
+    // America/Chicago ran on local mean time, -5:50:36, until 1883. Section 3.3.19 has no room
+    // for the seconds, and an unrounded offset renders as TZOFFSETFROM:-0550.60000000000002.
+    const offsets = lines('America/Chicago', '1880-01-15T12:00:00Z').filter((x) =>
+      x.startsWith('TZOFFSET')
+    );
+    expect(offsets).toContain('TZOFFSETTO:-0551');
+    for (const line of offsets) expect(line).toMatch(/^TZOFFSET(FROM|TO):[+-]\d{4}$/);
+  });
+
+  it('writes a rename between equal offsets as a fixed offset, not a DST year', function () {
+    // Asia/Istanbul moved to permanent +03:00 in March 2016 and renamed it from EEST to +03 that
+    // September. A new name is not a new offset: read as a transition, the two bracket a June date
+    // less than a year apart and yield two rules at the same offset.
+    const l = lines('Asia/Istanbul', '2016-06-15T12:00:00Z');
+    expect(rules(l)).toEqual([]);
+    expect(l).not.toContain('BEGIN:DAYLIGHT');
+    expect(l).toContain('TZOFFSETTO:+0300');
+  });
+
+  it('emits a single STANDARD for a zone with no DST', function () {
+    const l = lines('Asia/Kolkata', '2024-07-15T12:00:00Z');
+    expect(l.filter((x) => x === 'BEGIN:STANDARD').length).toBe(1);
+    expect(l).not.toContain('BEGIN:DAYLIGHT');
+    expect(l).toContain('TZOFFSETTO:+0530');
+    expect(rules(l)).toEqual([]);
+  });
+
+  describe('read back through the VTIMEZONE a created event carries', function () {
+    // A recipient that honours the VTIMEZONE computes every occurrence from what createICSString
+    // writes, so these read the event back through that component alone.
+    const occurrenceAt = (ics: string, y: number, m: number, d: number) => {
+      const tz = /DTSTART;TZID=([^:]+):/.exec(ics)[1];
+      const { event } = parseICSString(underUnknownName(ics, tz));
+      const iterator = event.iterator();
+      let next: InstanceType<typeof ICAL.Time>;
+      while ((next = iterator.next())) {
+        if (next.year === y && next.month === m && next.day === d) {
+          return event.getOccurrenceDetails(next).startDate.toJSDate().toISOString();
+        }
+        if (next.year > y) break;
+      }
+      throw new Error(`no occurrence on ${y}-${m}-${d}`);
+    };
+
+    it('reads a summer occurrence of a series created in winter at the hour the zone means', function () {
+      ICAL.TimezoneService.remove('America/Chicago');
+      // 09:00 Chicago, weekly from mid-January.
+      const ics = ICSEventHelpers.createICSString({
+        summary: 'Standup',
+        start: new Date('2024-01-15T15:00:00Z'),
+        end: new Date('2024-01-15T16:00:00Z'),
+        timezone: 'America/Chicago',
+        recurrenceRule: 'FREQ=WEEKLY',
+      });
+      expect(ics).toContain('DTSTART;TZID=America/Chicago:20240115T090000');
+      // 09:00 CDT is 14:00Z; a body claiming January's fixed -0600 gives 15:00Z.
+      expect(occurrenceAt(ics, 2024, 7, 15)).toBe('2024-07-15T14:00:00.000Z');
+    });
+
+    it("ends a Berlin series' summer time on the last Sunday of October in a later year", function () {
+      ICAL.TimezoneService.remove('Europe/Berlin');
+      // 09:00 Berlin, weekly on Mondays from July 2023. That October's transition falls on the
+      // fifth Sunday; October 2024 has only four, so a rule written as the fifth Sunday never
+      // fires and the series stays on summer time.
+      const ics = ICSEventHelpers.createICSString({
+        summary: 'Standup',
+        start: new Date('2023-07-17T07:00:00Z'),
+        end: new Date('2023-07-17T08:00:00Z'),
+        timezone: 'Europe/Berlin',
+        recurrenceRule: 'FREQ=WEEKLY',
+      });
+      expect(occurrenceAt(ics, 2024, 10, 21)).toBe('2024-10-21T07:00:00.000Z');
+      expect(occurrenceAt(ics, 2024, 10, 28)).toBe('2024-10-28T08:00:00.000Z');
+    });
+
+    it('reads a February meeting through a zone first registered from a July file', function () {
+      // One zone serves every file that names it, so it must describe the zone's whole history,
+      // whichever file names it first. Anchored at 2024's own transitions, the earliest DTSTART
+      // is 10 March, so a February wall clock matches no rule and reads as UTC.
+      ICAL.TimezoneService.remove('America/Chicago');
+      const withoutVTIMEZONE = (uid: string, dtstart: string) =>
+        [
+          'BEGIN:VCALENDAR',
+          'VERSION:2.0',
+          'BEGIN:VEVENT',
+          `UID:${uid}`,
+          `DTSTART;TZID=America/Chicago:${dtstart}`,
+          `DTEND;TZID=America/Chicago:${dtstart.slice(0, 9)}100000`,
+          'SUMMARY:Standup',
+          'END:VEVENT',
+          'END:VCALENDAR',
+        ].join('\r\n');
+      parseICSString(withoutVTIMEZONE('july', '20240715T090000'));
+      const { event } = parseICSString(withoutVTIMEZONE('february', '20240215T090000'));
+      // 09:00 CST is 15:00Z; read as UTC it would be 09:00Z.
+      expect(event.startDate.toJSDate().toISOString()).toBe('2024-02-15T15:00:00.000Z');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Windows zone names. Outlook and Exchange write "Eastern Standard Time" rather than
+// "America/New_York"; moment-timezone has no data for those and silently substitutes the
+// machine's own zone, which shifts the event by the difference between the two. The runner is
+// pinned to America/Chicago, one hour west of the zones used here, so that substitution shows.
+// ---------------------------------------------------------------------------
+
+describe('a Windows timezone identifier', function () {
+  const OUTLOOK_ICS = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN',
+    'BEGIN:VTIMEZONE',
+    'TZID:Eastern Standard Time',
+    'BEGIN:STANDARD',
+    'DTSTART:16011104T020000',
+    'RRULE:FREQ=YEARLY;BYDAY=1SU;BYMONTH=11',
+    'TZOFFSETFROM:-0400',
+    'TZOFFSETTO:-0500',
+    'END:STANDARD',
+    'BEGIN:DAYLIGHT',
+    'DTSTART:16010311T020000',
+    'RRULE:FREQ=YEARLY;BYDAY=2SU;BYMONTH=3',
+    'TZOFFSETFROM:-0500',
+    'TZOFFSETTO:-0400',
+    'END:DAYLIGHT',
+    'END:VTIMEZONE',
+    'BEGIN:VEVENT',
+    'UID:outlook-meeting@test',
+    'DTSTART;TZID=Eastern Standard Time:20240115T100000',
+    'DTEND;TZID=Eastern Standard Time:20240115T110000',
+    'SUMMARY:Outlook meeting',
+    'DTSTAMP:20240101T000000Z',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+
+  it('describes the zone the name means, under the name as written', function () {
+    const lines = (
+      ICSEventHelpers.createVTIMEZONEString(
+        'Eastern Standard Time',
+        new Date('2024-01-15T12:00:00Z')
+      ) || ''
+    ).split('\r\n');
+    // An Exchange server understands its own names, and RFC 5545 only asks that a VTIMEZONE
+    // define whatever name is used, so the identifier is reproduced verbatim.
+    expect(lines).toContain('TZID:Eastern Standard Time');
+    // ...with New York's offsets, not Chicago's.
+    expect(lines).toContain('TZOFFSETTO:-0500');
+    expect(lines).toContain('TZOFFSETTO:-0400');
+  });
+
+  it('describes a Windows-named zone without DST at its own offset', function () {
+    const lines = (
+      ICSEventHelpers.createVTIMEZONEString(
+        'India Standard Time',
+        new Date('2024-01-15T12:00:00Z')
+      ) || ''
+    ).split('\r\n');
+    expect(lines).toContain('TZID:India Standard Time');
+    expect(lines).toContain('TZOFFSETTO:+0530');
+    expect(lines).toContain('TZNAME:IST');
+    expect(lines).not.toContain('BEGIN:DAYLIGHT');
+  });
+
+  it('yields no component for a name that identifies no zone', function () {
+    expect(ICSEventHelpers.createVTIMEZONEString('Middle Earth Time', new Date())).toBe(null);
+  });
+
+  it('keeps the wall clock of an Outlook event whose time is edited', function () {
+    // The editor carries the event's own TZID into the save. Retimed to 15:00Z, the event is
+    // 10:00 in New York; moment's fallback to the machine zone would write Chicago's 09:00.
+    const result = ICSEventHelpers.updateEventTimes(OUTLOOK_ICS, {
+      start: Date.parse('2024-01-16T15:00:00Z') / 1000,
+      end: Date.parse('2024-01-16T16:00:00Z') / 1000,
+      timezone: 'Eastern Standard Time',
+    });
+    expect(result).toContain('DTSTART;TZID=Eastern Standard Time:20240116T100000');
+    expect(result).toContain('DTEND;TZID=Eastern Standard Time:20240116T110000');
+    expect(result).toContain('TZID:Eastern Standard Time');
+  });
+
+  it('writes the right instant for an event created in a Windows-named zone', function () {
+    const ics = ICSEventHelpers.createICSString({
+      summary: 'Outlook meeting',
+      start: new Date('2024-01-15T15:00:00Z'),
+      end: new Date('2024-01-15T16:00:00Z'),
+      timezone: 'Eastern Standard Time',
+    });
+    expect(ics).toContain('DTSTART;TZID=Eastern Standard Time:20240115T100000');
+    expect(ics).toContain('DTEND;TZID=Eastern Standard Time:20240115T110000');
+  });
+
+  it('falls back to UTC for a zone with no known rules, rather than to local time', function () {
+    const ics = ICSEventHelpers.createICSString({
+      summary: 'Unknown zone',
+      start: new Date('2024-01-15T15:00:00Z'),
+      end: new Date('2024-01-15T16:00:00Z'),
+      timezone: 'Middle Earth Time',
+    });
+    expect(ics).toContain('DTSTART:20240115T150000Z');
+    expect(ics).not.toContain('TZID=Middle Earth Time');
+  });
+
+  it('leaves an event written in UTC with no zone for the editor to read', function () {
+    // The UTC path writes a Z-terminated DTSTART and no TZID, so the editor has nothing to read
+    // back and opens the event in the machine's own zone.
+    const ics = ICSEventHelpers.createICSString({
+      summary: 'Unknown zone',
+      start: new Date('2024-01-15T15:00:00Z'),
+      end: new Date('2024-01-15T16:00:00Z'),
+      timezone: 'Middle Earth Time',
+    });
+    expect(ICSEventHelpers.getEventTimezone(ics)).toBe(null);
+  });
+
+  it('writes UTC as a trailing Z rather than as a zone of its own', function () {
+    // A machine whose moment.tz.guess() is 'UTC' reaches this.
+    const ics = ICSEventHelpers.createICSString({
+      summary: 'UTC meeting',
+      start: new Date('2024-01-15T15:00:00Z'),
+      end: new Date('2024-01-15T16:00:00Z'),
+      timezone: 'UTC',
+    });
+    expect(ics).toContain('DTSTART:20240115T150000Z');
+    expect(ics).not.toContain('TZID=UTC');
+    expect(ics).not.toContain('BEGIN:VTIMEZONE');
+  });
+
+  describe('that names no zone at all, on an event carrying its own VTIMEZONE', function () {
+    // Outlook writes a hand-rolled zone under this name when the user defines their own; CLDR
+    // has no entry for it, so no offsets can be computed from the name.
+    const CUSTOM_ZONE_ICS = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN',
+      'BEGIN:VTIMEZONE',
+      'TZID:Customized Time Zone',
+      'BEGIN:STANDARD',
+      'DTSTART:16010101T000000',
+      'TZOFFSETFROM:-0700',
+      'TZOFFSETTO:-0700',
+      'END:STANDARD',
+      'END:VTIMEZONE',
+      'BEGIN:VEVENT',
+      'UID:custom-zone@test',
+      'DTSTART;TZID=Customized Time Zone:20240115T090000',
+      'DTEND;TZID=Customized Time Zone:20240115T100000',
+      'SUMMARY:Custom zone meeting',
+      'DTSTAMP:20240101T000000Z',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+    afterEach(function () {
+      // Registration is process-wide; this name belongs to this file alone.
+      ICAL.TimezoneService.remove('Customized Time Zone');
+    });
+
+    it('retimes the event through the zone the file defines', function () {
+      // Section 3.6.5 makes the file's own component the authority, so the update keeps it
+      // rather than falling back to UTC: 17:00Z is 10:00 at the fixed -07:00 declared here.
+      const result = ICSEventHelpers.updateEventTimes(CUSTOM_ZONE_ICS, {
+        start: Date.parse('2024-01-16T17:00:00Z') / 1000,
+        end: Date.parse('2024-01-16T18:00:00Z') / 1000,
+        timezone: 'Customized Time Zone',
+      });
+      expect(result).toContain('DTSTART;TZID=Customized Time Zone:20240116T100000');
+      expect(result).toContain('DTEND;TZID=Customized Time Zone:20240116T110000');
+      expect(result).toContain('TZID:Customized Time Zone');
+    });
+  });
+
+  it('reads a Windows-named time whose VTIMEZONE the server omitted at the instant it means', function () {
+    ICAL.TimezoneService.remove('W. Europe Standard Time');
+    const { event } = parseICSString(
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'BEGIN:VEVENT',
+        'UID:berlin@test',
+        'DTSTART;TZID=W. Europe Standard Time:20240115T160000',
+        'DTEND;TZID=W. Europe Standard Time:20240115T170000',
+        'SUMMARY:Berlin',
+        'END:VEVENT',
+        'END:VCALENDAR',
+      ].join('\r\n')
+    );
+    // 16:00 Berlin is 15:00Z; left floating, the runner reads it as Chicago's 16:00, 22:00Z.
+    expect(event.startDate.toJSDate().toISOString()).toBe('2024-01-15T15:00:00.000Z');
+  });
+});
+
+describe('ICSEventHelpers.createVTIMEZONEString, for zones no single yearly rule describes', function () {
+  // Each value is the instant moment-timezone gives the wall clock: what the component must read.
+  const readThrough = (tz: string, reference: string, wallClock: string, years?: number) => {
+    const vtimezone = ICSEventHelpers.createVTIMEZONEString(tz, new Date(reference), years);
+    const { event } = parseICSString(
+      underUnknownName(
+        [
+          'BEGIN:VCALENDAR',
+          'VERSION:2.0',
+          vtimezone,
+          'BEGIN:VEVENT',
+          'UID:read-through@test',
+          `DTSTART;TZID=${tz}:${wallClock}`,
+          'DTSTAMP:20240101T000000Z',
+          'END:VEVENT',
+          'END:VCALENDAR',
+        ].join('\r\n'),
+        tz
+      )
+    );
+    return event.startDate.toJSDate().toISOString();
+  };
+
+  it("starts Chile's summer time on the Sunday on or after 2 September", function () {
+    // 1 September 2030 is a Sunday; the rule a 2026 date gives as "the first Sunday" would start
+    // summer time a week early.
+    expect(readThrough('America/Santiago', '2026-09-23', '20300904T120000')).toBe(
+      '2030-09-04T16:00:00.000Z'
+    );
+    expect(readThrough('America/Santiago', '2026-09-23', '20300909T120000')).toBe(
+      '2030-09-09T15:00:00.000Z'
+    );
+  });
+
+  it("starts Israel's summer time on the Friday on or after 23 March", function () {
+    // 30 March 2029 is the last Friday; the change is a week earlier.
+    expect(readThrough('Asia/Jerusalem', '2026-09-23', '20290326T120000')).toBe(
+      '2029-03-26T09:00:00.000Z'
+    );
+  });
+
+  it("ends Egypt's summer time after the last Thursday of October, in November when it falls on the 31st", function () {
+    expect(readThrough('Africa/Cairo', '2026-09-23', '20301031T120000')).toBe(
+      '2030-10-31T09:00:00.000Z'
+    );
+  });
+
+  it("follows Morocco's Ramadan suspensions, which no yearly rule describes", function () {
+    expect(readThrough('Africa/Casablanca', '2024-07-01', '20250310T120000')).toBe(
+      '2025-03-10T12:00:00.000Z'
+    );
+    expect(readThrough('Africa/Casablanca', '2024-07-01', '20250501T120000')).toBe(
+      '2025-05-01T11:00:00.000Z'
+    );
+    expect(readThrough('Africa/Casablanca', '2024-07-01', '20260215T120000')).toBe(
+      '2026-02-15T12:00:00.000Z'
+    );
+    expect(readThrough('Africa/Casablanca', '2024-07-01', '20250406T120000')).toBe(
+      '2025-04-06T11:00:00.000Z'
+    );
+    expect(readThrough('Africa/Casablanca', '2024-07-01', '20261015T120000')).toBe(
+      '2026-10-15T12:00:00.000Z'
+    );
+  });
+
+  it('reads the segment before the reference, inside a Ramadan suspension', function () {
+    expect(readThrough('Africa/Casablanca', '2024-09-01', '20240315T120000')).toBe(
+      '2024-03-15T12:00:00.000Z'
+    );
+    expect(readThrough('Africa/Casablanca', '2024-09-01', '20240215T120000')).toBe(
+      '2024-02-15T11:00:00.000Z'
+    );
+  });
+
+  it('reads the change before the reference where the rules it anchors fall a week later', function () {
+    // The US left DST on 29 October 2006; the 2007 rule puts that change on 5 November.
+    expect(readThrough('America/Chicago', '2007-09-01', '20061101T090000')).toBe(
+      '2006-11-01T15:00:00.000Z'
+    );
+  });
+
+  it('holds the last offset past ten years, save the rules already in force', function () {
+    // Morocco's 2025 suspension falls after 1 July 2024, ten years on; the +01 in force then holds.
+    expect(readThrough('Africa/Casablanca', '2014-07-01', '20240315T120000')).toBe(
+      '2024-03-15T12:00:00.000Z'
+    );
+    expect(readThrough('Africa/Casablanca', '2014-07-01', '20250301T120000')).toBe(
+      '2025-03-01T11:00:00.000Z'
+    );
+    expect(readThrough('America/Chicago', '2024-07-01', '20900115T090000')).toBe(
+      '2090-01-15T15:00:00.000Z'
+    );
+    // Egypt's rules from 2023 start after 2019, ten years on; the +02 in force then holds.
+    expect(readThrough('Africa/Cairo', '2009-07-01', '20300715T120000')).toBe(
+      '2030-07-15T10:00:00.000Z'
+    );
+  });
+
+  it("writes Egypt's change after the last Thursday of October as rules with no end", function () {
+    // Friday 1 November 2041 follows Thursday 31 October.
+    const lines = ICSEventHelpers.createVTIMEZONEString(
+      'Africa/Cairo',
+      new Date('2026-09-23')
+    ).split('\r\n');
+    expect(lines.filter((l) => l.startsWith('RRULE:'))).toEqual([
+      'RRULE:FREQ=YEARLY;BYMONTH=10;BYMONTHDAY=26,27,28,29,30,31;BYDAY=FR',
+      'RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=-1FR',
+      'RRULE:FREQ=YEARLY;BYMONTH=11;BYMONTHDAY=1;BYDAY=FR',
+    ]);
+    expect(readThrough('Africa/Cairo', '2026-09-23', '20411031T120000')).toBe(
+      '2041-10-31T09:00:00.000Z'
+    );
+    expect(readThrough('Africa/Cairo', '2026-09-23', '20411101T120000')).toBe(
+      '2041-11-01T10:00:00.000Z'
+    );
+    // In 2024 the change fell on 1 November, a year that rule gives no day in October.
+    expect(readThrough('Africa/Cairo', '2024-07-01', '20241101T120000')).toBe(
+      '2024-11-01T10:00:00.000Z'
+    );
+  });
+
+  it('writes a zone that never changed offset', function () {
+    expect(readThrough('Etc/GMT-3', '2026-09-23', '20260923T120000')).toBe(
+      '2026-09-23T09:00:00.000Z'
+    );
+  });
+
+  it('opens before a change from the 1960s that a 1970s reference writes', function () {
+    // French Guiana moved from -04:00 to -03:00 in October 1967.
+    expect(readThrough('America/Cayenne', '1975-07-01', '19750801T120000')).toBe(
+      '1975-08-01T15:00:00.000Z'
+    );
+    expect(readThrough('America/Cayenne', '1975-07-01', '19670115T120000')).toBe(
+      '1967-01-15T16:00:00.000Z'
+    );
+  });
+
+  it('writes the span around each reference, though two share a segment', function () {
+    // Turkey left EET for a permanent +03:00 in 2016: inside ten years of 2020, outside from 2027.
+    const blocks = (when: string) =>
+      ICSEventHelpers.createVTIMEZONEString('Europe/Istanbul', new Date(when))
+        .split('\r\n')
+        .filter((l) => l.startsWith('BEGIN:STANDARD') || l.startsWith('BEGIN:DAYLIGHT')).length;
+    expect(blocks('2027-07-01')).toBe(1);
+    expect(blocks('2020-07-01')).toBe(3);
+    expect(readThrough('Europe/Istanbul', '2020-07-01', '20151201T120000')).toBe(
+      '2015-12-01T10:00:00.000Z'
+    );
+  });
+
+  it('reads the years before a rule changed inside a DST era', function () {
+    // The US moved from the first Sunday of April to the second of March in 2007; a series created
+    // in 2005 is still on standard time on 20 March 2006.
+    expect(readThrough('America/Chicago', '2005-07-15', '20060320T090000')).toBe(
+      '2006-03-20T15:00:00.000Z'
+    );
+  });
+
+  it("writes a created event's zone as the two rules every other writer does", function () {
+    expect(ICSEventHelpers.createVTIMEZONEString('America/Chicago', new Date('2026-09-23'))).toBe(
+      [
+        'BEGIN:VTIMEZONE',
+        'TZID:America/Chicago',
+        'BEGIN:STANDARD',
+        'DTSTART:19701101T020000',
+        'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU',
+        'TZOFFSETFROM:-0500',
+        'TZOFFSETTO:-0600',
+        'TZNAME:CST',
+        'END:STANDARD',
+        'BEGIN:DAYLIGHT',
+        'DTSTART:19700308T020000',
+        'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU',
+        'TZOFFSETFROM:-0600',
+        'TZOFFSETTO:-0500',
+        'TZNAME:CDT',
+        'END:DAYLIGHT',
+        'END:VTIMEZONE',
+      ].join('\r\n')
+    );
+  });
+
+  it('writes a weekday on or after a date, and a fixed date, as one rule each', function () {
+    const rules = (tz: string, when: string) =>
+      ICSEventHelpers.createVTIMEZONEString(tz, new Date(when))
+        .split('\r\n')
+        .filter((l) => l.startsWith('RRULE:'));
+    expect(rules('America/Santiago', '2026-09-23')).toEqual([
+      'RRULE:FREQ=YEARLY;BYMONTH=4;BYMONTHDAY=2,3,4,5,6,7,8;BYDAY=SU',
+      'RRULE:FREQ=YEARLY;BYMONTH=9;BYMONTHDAY=2,3,4,5,6,7,8;BYDAY=SU',
+    ]);
+    // Iran changed on 22 March and 22 September, the 21st in leap years.
+    expect(rules('Asia/Tehran', '2008-07-01')).toContain(
+      'RRULE:FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=22;UNTIL=20110321T203000Z'
+    );
+  });
+
+  it('moves a rule to its new wall clock in the year the zone moved it', function () {
+    // Manitoba changed back at 03:00 until 2005 and at 02:00 from 2006; a rule keeping 03:00 holds
+    // the last week of October 2006 on summer time.
+    expect(readThrough('America/Winnipeg', '2005-07-01', '20061030T120000')).toBe(
+      '2006-10-30T18:00:00.000Z'
+    );
+  });
+
+  it('writes a permanent move to a later offset as STANDARD, as other writers do', function () {
+    // Moscow went to a permanent +04:00 in March 2011. Converters that keep one STANDARD/DAYLIGHT
+    // pair per era read a DAYLIGHT block as the summer half of a rule.
+    const lines = ICSEventHelpers.createVTIMEZONEString(
+      'Europe/Moscow',
+      new Date('2009-07-15')
+    ).split('\r\n');
+    expect(lines[lines.indexOf('DTSTART:20110327T020000') - 1]).toBe('BEGIN:STANDARD');
+  });
+
+  it('writes the rules the data runs out on without UNTIL, in either hemisphere', function () {
+    for (const tz of ['America/Chicago', 'Australia/Sydney']) {
+      const lines = ICSEventHelpers.createVTIMEZONEString(tz, new Date('2026-09-23')).split('\r\n');
+      expect(lines.filter((l) => l.startsWith('BEGIN:')).length).toBe(3);
+      expect(lines.filter((l) => l.includes('UNTIL'))).toEqual([]);
+    }
+  });
+
+  it('places a change out of an LMT offset under 16 minutes at its own wall clock', function () {
+    // Africa/Lagos left +00:13:35 for GMT at midnight on 1 July 1905. moment reads utcOffset(13.58)
+    // as hours, which put the change at 13:21:25.
+    const lines = ICSEventHelpers.createVTIMEZONEString(
+      'Africa/Lagos',
+      new Date('1900-01-01')
+    ).split('\r\n');
+    expect(lines).toContain('DTSTART:19050701T000000');
+  });
+
+  it('keeps the last year of a rule whose offset has seconds, which ical.js rounds', function () {
+    // St. John's was -3:30:52 in 1918, written -0331; an UNTIL taken from the exact offset ends the
+    // rule eight seconds before its 1918 change.
+    expect(readThrough('America/St_Johns', '1601-01-01', '19180420T120000', Infinity)).toBe(
+      '1918-04-20T14:31:00.000Z'
+    );
+  });
+
+  it('reads the first months of 1970 through a zone described from its whole history', function () {
+    // The component's opening offset starts before the zone's first change, not in 1970, where it
+    // would override the history already written.
+    expect(readThrough('America/Chicago', '1601-01-01', '19700215T090000', Infinity)).toBe(
+      '1970-02-15T15:00:00.000Z'
+    );
+  });
+
+  it("reads a zone registered from a recent file at an older file's offsets", function () {
+    // One zone serves every file that names it: whichever file names Tehran first, a 2021
+    // summer meeting is on the +04:30 Iran abolished in 2022, not today's +03:30.
+    ICAL.TimezoneService.remove('Asia/Tehran');
+    const withoutVTIMEZONE = (uid: string, dtstart: string) =>
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'BEGIN:VEVENT',
+        `UID:${uid}`,
+        `DTSTART;TZID=Asia/Tehran:${dtstart}`,
+        'DTSTAMP:20240101T000000Z',
+        'END:VEVENT',
+        'END:VCALENDAR',
+      ].join('\r\n');
+    parseICSString(withoutVTIMEZONE('recent', '20240715T090000'));
+    const { event } = parseICSString(withoutVTIMEZONE('older', '20210715T090000'));
+    // Read before the zone is removed: a TZID the file does not define resolves when first read.
+    const instant = event.startDate.toJSDate().toISOString();
+    ICAL.TimezoneService.remove('Asia/Tehran');
+    expect(instant).toBe('2021-07-15T04:30:00.000Z');
+  });
+});
+
+describe('ICSEventHelpers.generateUID', function () {
+  it('is a UUID in the mailspring domain', function () {
+    expect(ICSEventHelpers.generateUID()).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@mailspring$/
+    );
+  });
+
+  it('does not repeat', function () {
+    const uids = new Set(Array.from({ length: 1000 }, () => ICSEventHelpers.generateUID()));
+    expect(uids.size).toBe(1000);
+  });
+});
+
+describe('ICSEventHelpers VTIMEZONE bookkeeping', function () {
+  const RECURRING_BERLIN_WITH_EXCEPTION = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Test//Test//EN',
+    'BEGIN:VTIMEZONE',
+    'TZID:Europe/Berlin',
+    'BEGIN:STANDARD',
+    'DTSTART:19700101T000000',
+    'TZOFFSETFROM:+0100',
+    'TZOFFSETTO:+0100',
+    'TZNAME:CET',
+    'END:STANDARD',
+    'END:VTIMEZONE',
+    'BEGIN:VEVENT',
+    'UID:berlin@test',
+    'DTSTAMP:20240101T000000Z',
+    'DTSTART;TZID=Europe/Berlin:20240115T100000',
+    'DTEND;TZID=Europe/Berlin:20240115T110000',
+    'RRULE:FREQ=DAILY',
+    'SUMMARY:Standup',
+    'END:VEVENT',
+    'BEGIN:VEVENT',
+    'UID:berlin@test',
+    'RECURRENCE-ID:20240116T090000Z',
+    'DTSTAMP:20240101T000000Z',
+    'DTSTART;TZID=Europe/Berlin:20240116T140000',
+    'DTEND;TZID=Europe/Berlin:20240116T150000',
+    'SUMMARY:Standup (moved)',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+
+  const tzids = (ics: string) =>
+    (ics.match(/^TZID:(.*)$/gm) || []).map((l) => l.replace('TZID:', '').trim()).sort();
+  const referenced = (ics: string) =>
+    [...new Set((ics.match(/TZID=([^:;]*)/g) || []).map((m) => m.replace('TZID=', '')))].sort();
+
+  it('keeps a VTIMEZONE for every zone the calendar still references', function () {
+    // Retiming the master into another zone leaves the inline exception in Berlin; a TZID
+    // with no VTIMEZONE is rejected by a strict parser and read as floating by a lenient one.
+    const out = ICSEventHelpers.updateEventTimes(RECURRING_BERLIN_WITH_EXCEPTION, {
+      start: Math.round(new Date('2024-01-15T16:00:00Z').getTime() / 1000),
+      end: Math.round(new Date('2024-01-15T17:00:00Z').getTime() / 1000),
+      timezone: 'America/Chicago',
+    });
+    expect(referenced(out)).toEqual(['America/Chicago', 'Europe/Berlin']);
+    expect(tzids(out)).toEqual(['America/Chicago', 'Europe/Berlin']);
+  });
+
+  it('drops a VTIMEZONE once nothing refers to it any more', function () {
+    // The master was the only thing in Berlin, so moving it should take the zone with it.
+    const noException = RECURRING_BERLIN_WITH_EXCEPTION.replace(
+      /BEGIN:VEVENT\r\nUID:berlin@test\r\nRECURRENCE-ID[\s\S]*?END:VEVENT\r\n/,
+      ''
+    );
+    const out = ICSEventHelpers.updateEventTimes(noException, {
+      start: Math.round(new Date('2024-01-15T16:00:00Z').getTime() / 1000),
+      end: Math.round(new Date('2024-01-15T17:00:00Z').getTime() / 1000),
+      timezone: 'America/Chicago',
+    });
+    expect(tzids(out)).toEqual(['America/Chicago']);
+  });
+
+  it('gives a newly created zoned event a matching VTIMEZONE', function () {
+    const ics = ICSEventHelpers.createICSString({
+      summary: 'Kickoff',
+      start: new Date('2026-03-01T14:00:00Z'),
+      end: new Date('2026-03-01T15:00:00Z'),
+      timezone: 'America/Chicago',
+    });
+    expect(tzids(ics)).toEqual(['America/Chicago']);
+    expect(referenced(ics)).toEqual(['America/Chicago']);
+  });
+});
+
+describe('ICSEventHelpers.updateRecurringEventTimes with a new zone', function () {
+  // Google's shape: a Berlin series with a zoned EXDATE, an RDATE, a UTC UNTIL and an inline
+  // exception. Chicago is on DST from 10 March 2024, Berlin from 31 March, so the anchors in
+  // between tell the wall-clock move apart from the same instant.
+  const BERLIN_SERIES = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Test//Test//EN',
+    'BEGIN:VTIMEZONE',
+    'TZID:Europe/Berlin',
+    'BEGIN:DAYLIGHT',
+    'TZOFFSETFROM:+0100',
+    'TZOFFSETTO:+0200',
+    'TZNAME:CEST',
+    'DTSTART:19700329T020000',
+    'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU',
+    'END:DAYLIGHT',
+    'BEGIN:STANDARD',
+    'TZOFFSETFROM:+0200',
+    'TZOFFSETTO:+0100',
+    'TZNAME:CET',
+    'DTSTART:19701025T030000',
+    'RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU',
+    'END:STANDARD',
+    'END:VTIMEZONE',
+    'BEGIN:VEVENT',
+    'UID:berlin-series@test',
+    'DTSTAMP:20240101T000000Z',
+    'DTSTART;TZID=Europe/Berlin:20240115T100000',
+    'DTEND;TZID=Europe/Berlin:20240115T110000',
+    'RRULE:FREQ=DAILY;UNTIL=20240320T090000Z',
+    'EXDATE;TZID=Europe/Berlin:20240315T100000',
+    'RDATE;TZID=Europe/Berlin:20240316T140000',
+    'SUMMARY:Standup',
+    'END:VEVENT',
+    'BEGIN:VEVENT',
+    'UID:berlin-series@test',
+    'RECURRENCE-ID;TZID=Europe/Berlin:20240318T100000',
+    'DTSTAMP:20240101T000000Z',
+    'DTSTART;TZID=Europe/Berlin:20240318T140000',
+    'DTEND;TZID=Europe/Berlin:20240318T150000',
+    'SUMMARY:Standup (moved)',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+  const START = Math.round(new Date('2024-01-15T09:00:00Z').getTime() / 1000);
+
+  const tzids = (ics: string) =>
+    (ics.match(/^TZID:(.*)$/gm) || []).map((l) => l.replace('TZID:', '').trim()).sort();
+  const rezoned = () =>
+    ICSEventHelpers.updateRecurringEventTimes(
+      BERLIN_SERIES,
+      START,
+      START,
+      START + 3600,
+      false,
+      'America/Chicago'
+    );
+
+  it('writes the master in the new zone and keeps the VTIMEZONE of the exception left in the old one', function () {
+    const out = rezoned();
+    expect(out).toContain('DTSTART;TZID=America/Chicago:20240115T030000');
+    expect(out).toContain('DTEND;TZID=America/Chicago:20240115T040000');
+    expect(out).toContain('DTSTART;TZID=Europe/Berlin:20240318T140000');
+    expect(tzids(out)).toEqual(['America/Chicago', 'Europe/Berlin']);
+  });
+
+  it('moves EXDATE, RDATE, UNTIL and RECURRENCE-ID onto the rezoned rule by wall clock, not instant', function () {
+    const out = rezoned();
+    expect(out).toContain('EXDATE;TZID=America/Chicago:20240315T030000');
+    expect(out).toContain('RDATE;TZID=America/Chicago:20240316T070000');
+    expect(out).toContain('UNTIL=20240320T080000Z');
+    expect(out).toContain('RECURRENCE-ID;TZID=America/Chicago:20240318T030000');
+    expect(out).not.toContain('TZID=Europe/Berlin:20240315');
+  });
+
+  it('still excludes, adds and replaces the same occurrences once expanded', function () {
+    const from = Date.parse('2024-03-14T00:00:00Z') / 1000;
+    const to = Date.parse('2024-03-22T00:00:00Z') / 1000;
+    const starts = ICSEventHelpers.expandBetween(rezoned(), from, from, to)
+      .map((e) => e.startDate.toJSDate().toISOString())
+      .sort();
+    expect(starts).toEqual([
+      '2024-03-14T08:00:00.000Z',
+      '2024-03-16T08:00:00.000Z',
+      '2024-03-16T12:00:00.000Z',
+      '2024-03-17T08:00:00.000Z',
+      '2024-03-18T13:00:00.000Z',
+      '2024-03-19T08:00:00.000Z',
+      '2024-03-20T08:00:00.000Z',
+    ]);
+  });
+
+  it('rezones a series defined by RDATEs alone', function () {
+    const rdateOnly = BERLIN_SERIES.replace('RRULE:FREQ=DAILY;UNTIL=20240320T090000Z\r\n', '');
+    const out = ICSEventHelpers.updateRecurringEventTimes(
+      rdateOnly,
+      START,
+      START,
+      START + 3600,
+      false,
+      'America/Chicago'
+    );
+    expect(out).toContain('RDATE;TZID=America/Chicago:20240316T070000');
+  });
+
+  it('keeps a UTC RECURRENCE-ID in UTC, at the instant of the rezoned instance', function () {
+    const utcRid = BERLIN_SERIES.replace(
+      'RECURRENCE-ID;TZID=Europe/Berlin:20240318T100000',
+      'RECURRENCE-ID:20240318T090000Z'
+    );
+    const out = ICSEventHelpers.updateRecurringEventTimes(
+      utcRid,
+      START,
+      START,
+      START + 3600,
+      false,
+      'America/Chicago'
+    );
+    expect(out).toContain('RECURRENCE-ID:20240318T080000Z');
+  });
+});
+
+const RECURRING_INVITE_ICS = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:series-invite@test
+RECURRENCE-ID:20260309T140000Z
+DTSTART:20260310T090000Z
+DTEND:20260310T100000Z
+SUMMARY:Weekly Sync (moved)
+DTSTAMP:20260101T000000Z
+SEQUENCE:2
+ORGANIZER;CN=Ada:mailto:ada@example.com
+ATTENDEE;CN=Ada;ROLE=CHAIR;PARTSTAT=ACCEPTED:mailto:ada@example.com
+ATTENDEE;CN=Me;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION:mailto:me@example.com
+END:VEVENT
+BEGIN:VEVENT
+UID:series-invite@test
+DTSTART:20260302T140000Z
+DTEND:20260302T150000Z
+RRULE:FREQ=WEEKLY;COUNT=6
+EXDATE:20260316T140000Z
+SUMMARY:Weekly Sync
+DTSTAMP:20260101T000000Z
+SEQUENCE:2
+ORGANIZER;CN=Ada:mailto:ada@example.com
+ATTENDEE;CN=Ada;ROLE=CHAIR;PARTSTAT=ACCEPTED:mailto:ada@example.com
+ATTENDEE;CN=Me;ROLE=REQ-PARTICIPANT;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com
+ATTENDEE;CN=Bo;PARTSTAT=TENTATIVE:mailto:bo@example.com
+END:VEVENT
+END:VCALENDAR`;
+
+describe('ICSEventHelpers.createCounterProposal', function () {
+  const unfold = (ics: string) => ics.replace(/\r\n[ \t]/g, '').split(/\r?\n/);
+  const line = (ics: string, prefix: string) => unfold(ics).find((l) => l.startsWith(prefix));
+  const occurrence = (iso: string) => ICAL.Time.fromDateTimeString(iso);
+
+  const propose = (ics = INVITE_ICS, extra = {}) =>
+    ICSEventHelpers.createCounterProposal(ics, {
+      email: 'me@example.com',
+      start: new Date('2026-03-02T16:00:00Z'),
+      end: new Date('2026-03-02T17:00:00Z'),
+      ...extra,
+    });
+
+  it('declares METHOD:COUNTER', function () {
+    expect(line(propose(), 'METHOD:')).toBe('METHOD:COUNTER');
+  });
+
+  it('keeps the UID and ORGANIZER so the organizer can match it to the invitation', function () {
+    expect(line(propose(), 'UID:')).toBe('UID:invite-uid@test');
+    expect(line(propose(), 'ORGANIZER')).toContain('mailto:ada@example.com');
+  });
+
+  it('carries the proposed times', function () {
+    const ics = propose();
+    expect(line(ics, 'DTSTART')).toBe('DTSTART:20260302T160000Z');
+    expect(line(ics, 'DTEND')).toBe('DTEND:20260302T170000Z');
+  });
+
+  it('lists only the proposer, tentative, with the parameters the organizer gave them', function () {
+    const attendees = unfold(propose()).filter((l) => l.startsWith('ATTENDEE'));
+    expect(attendees.length).toBe(1);
+    expect(attendees[0]).toContain('mailto:me@example.com');
+    expect(attendees[0]).toContain('CN=Me');
+    expect(attendees[0]).toContain('ROLE=REQ-PARTICIPANT');
+    expect(attendees[0]).toContain('CUTYPE=INDIVIDUAL');
+    expect(attendees[0]).toContain('PARTSTAT=TENTATIVE');
+    expect(attendees[0]).not.toContain('RSVP=TRUE');
+  });
+
+  it('matches the proposer however their address is cased', function () {
+    expect(propose(INVITE_ICS, { email: 'ME@Example.COM' })).not.toBe(null);
+  });
+
+  it('refreshes DTSTAMP so a later proposal supersedes an earlier one', function () {
+    expect(line(propose(), 'DTSTAMP:')).not.toBe('DTSTAMP:20260101T000000Z');
+  });
+
+  it('includes a comment when one is given, and none otherwise', function () {
+    expect(line(propose(INVITE_ICS, { comment: 'Clashes with my standup' }), 'COMMENT')).toContain(
+      'Clashes with my standup'
+    );
+    expect(line(propose(), 'COMMENT')).toBe(undefined);
+  });
+
+  it('returns null when the proposer is not an attendee', function () {
+    expect(propose(INVITE_ICS, { email: 'nobody@example.com' })).toBe(null);
+  });
+
+  it('keeps an all-day invitation on dates', function () {
+    const allDay = INVITE_ICS.replace(
+      'DTSTART:20260301T140000Z',
+      'DTSTART;VALUE=DATE:20241012'
+    ).replace('DTEND:20260301T150000Z', 'DTEND;VALUE=DATE:20241013');
+    const ics = propose(allDay, {
+      start: new Date(2026, 9, 13, 0, 0, 0),
+      end: new Date(2026, 9, 14, 0, 0, 0),
+    });
+    expect(line(ics, 'DTSTART')).toBe('DTSTART;VALUE=DATE:20261013');
+    expect(line(ics, 'DTEND')).toBe('DTEND;VALUE=DATE:20261014');
+  });
+
+  describe('for a recurring invitation', function () {
+    it('counters one occurrence, named by RECURRENCE-ID, rather than moving the series', function () {
+      const ics = propose(RECURRING_INVITE_ICS, {
+        recurrenceId: occurrence('2026-03-23T14:00:00Z'),
+      });
+      expect(line(ics, 'RECURRENCE-ID')).toBe('RECURRENCE-ID:20260323T140000Z');
+      expect(line(ics, 'RRULE')).toBe(undefined);
+      expect(line(ics, 'EXDATE')).toBe(undefined);
+      expect(line(ics, 'DTSTART')).toBe('DTSTART:20260302T160000Z');
+      expect(line(ics, 'SUMMARY')).toBe('SUMMARY:Weekly Sync');
+    });
+
+    it('keeps the series UID and sequence', function () {
+      const ics = propose(RECURRING_INVITE_ICS, {
+        recurrenceId: occurrence('2026-03-23T14:00:00Z'),
+      });
+      expect(line(ics, 'UID:')).toBe('UID:series-invite@test');
+      expect(line(ics, 'SEQUENCE:')).toBe('SEQUENCE:2');
+    });
+
+    it('builds on the modified occurrence when the one countered has been moved', function () {
+      const ics = propose(RECURRING_INVITE_ICS, {
+        recurrenceId: occurrence('2026-03-09T14:00:00Z'),
+      });
+      expect(line(ics, 'RECURRENCE-ID')).toBe('RECURRENCE-ID:20260309T140000Z');
+      expect(line(ics, 'SUMMARY')).toBe('SUMMARY:Weekly Sync (moved)');
+    });
+
+    it('refuses to counter a series without naming the occurrence', function () {
+      expect(() => propose(RECURRING_INVITE_ICS)).toThrow();
+    });
+
+    it('drops RDATE along with the rule: a counter is for one occurrence', function () {
+      const withRdate = RECURRING_INVITE_ICS.replace(
+        'EXDATE:20260316T140000Z',
+        'EXDATE:20260316T140000Z\nRDATE:20260401T140000Z'
+      );
+      const ics = propose(withRdate, { recurrenceId: occurrence('2026-03-23T14:00:00Z') });
+      expect(line(ics, 'RDATE')).toBe(undefined);
+      expect(line(ics, 'RRULE')).toBe(undefined);
+    });
+
+    // As Google writes a series: DTSTART and every RECURRENCE-ID carry the calendar's TZID.
+    const ZONED_INVITE_ICS = RECURRING_INVITE_ICS.replace(
+      'RECURRENCE-ID:20260309T140000Z',
+      'RECURRENCE-ID;TZID=America/Los_Angeles:20260309T060000'
+    ).replace('DTSTART:20260302T140000Z', 'DTSTART;TZID=America/Los_Angeles:20260302T060000');
+
+    it('keeps the RECURRENCE-ID a moved occurrence came with, zone and all', function () {
+      const ics = propose(ZONED_INVITE_ICS, { recurrenceId: occurrence('2026-03-09T13:00:00Z') });
+      expect(line(ics, 'SUMMARY')).toBe('SUMMARY:Weekly Sync (moved)');
+      // RFC 5545 section 3.2.19: a TZID parameter may not sit on a UTC value.
+      expect(line(ics, 'RECURRENCE-ID')).toBe(
+        'RECURRENCE-ID;TZID=America/Los_Angeles:20260309T060000'
+      );
+    });
+
+    it('names an occurrence of a zoned series the way its DTSTART is written', function () {
+      const ics = propose(ZONED_INVITE_ICS, { recurrenceId: occurrence('2026-03-23T13:00:00Z') });
+      // 13:00Z on 23 March is 06:00 in Los Angeles, daylight time having begun on the 8th.
+      expect(line(ics, 'RECURRENCE-ID')).toBe(
+        'RECURRENCE-ID;TZID=America/Los_Angeles:20260323T060000'
+      );
+    });
+
+    it('names an occurrence of an all-day series by its date', function () {
+      const allDaySeries = RECURRING_INVITE_ICS.replace(
+        'DTSTART:20260302T140000Z\nDTEND:20260302T150000Z',
+        'DTSTART;VALUE=DATE:20260302\nDTEND;VALUE=DATE:20260303'
+      );
+      const ics = propose(allDaySeries, {
+        recurrenceId: ICAL.Time.fromDateString('2026-03-23'),
+        start: new Date(2026, 2, 24, 0, 0, 0),
+        end: new Date(2026, 2, 25, 0, 0, 0),
+      });
+      expect(line(ics, 'RECURRENCE-ID')).toBe('RECURRENCE-ID;VALUE=DATE:20260323');
+      // The grid hands over the occurrence's instant; an all-day series is still named by date.
+      const fromInstant = propose(allDaySeries, {
+        recurrenceId: occurrence('2026-03-23T06:00:00Z'),
+        start: new Date(2026, 2, 24, 0, 0, 0),
+        end: new Date(2026, 2, 25, 0, 0, 0),
+      });
+      expect(line(fromInstant, 'RECURRENCE-ID')).toBe('RECURRENCE-ID;VALUE=DATE:20260323');
+    });
+
+    it('falls back to UTC when the series names a zone nobody can identify', function () {
+      const unknownZone = RECURRING_INVITE_ICS.replace(
+        'DTSTART:20260302T140000Z',
+        'DTSTART;TZID=Nowhere/Land:20260302T140000'
+      );
+      const ics = propose(unknownZone, { recurrenceId: occurrence('2026-03-23T13:00:00Z') });
+      expect(line(ics, 'RECURRENCE-ID')).toBe('RECURRENCE-ID:20260323T130000Z');
+    });
+
+    // RFC 5545 section 3.3.5: a value written with a TZID carries no trailing Z, even when the
+    // zone named is UTC.
+    it('names an occurrence of a series zoned Etc/UTC in that zone, without a Z', function () {
+      const etcUtc = RECURRING_INVITE_ICS.replace(
+        'DTSTART:20260302T140000Z',
+        'DTSTART;TZID=Etc/UTC:20260302T140000'
+      );
+      const ics = propose(etcUtc, { recurrenceId: occurrence('2026-03-23T14:00:00Z') });
+      expect(line(ics, 'RECURRENCE-ID')).toBe('RECURRENCE-ID;TZID=Etc/UTC:20260323T140000');
+    });
+
+    it('names an occurrence of a series zoned UTC the way its DTSTART is written', function () {
+      const utc = RECURRING_INVITE_ICS.replace(
+        'DTSTART:20260302T140000Z',
+        'DTSTART;TZID=UTC:20260302T140000'
+      );
+      const ics = propose(utc, { recurrenceId: occurrence('2026-03-23T14:00:00Z') });
+      expect(line(ics, 'RECURRENCE-ID')).toBe('RECURRENCE-ID;TZID=UTC:20260323T140000');
+    });
+
+    it('keeps the RECURRENCE-ID of an invitation to a single occurrence', function () {
+      const single = RECURRING_INVITE_ICS.replace(
+        /BEGIN:VEVENT\r?\nUID:series-invite@test\r?\nDTSTART:20260302[\s\S]*?END:VEVENT\r?\n/,
+        ''
+      );
+      expect(single).not.toContain('RRULE');
+      const ics = propose(single);
+      expect(line(ics, 'RECURRENCE-ID')).toBe('RECURRENCE-ID:20260309T140000Z');
+      expect(line(ics, 'DTSTART')).toBe('DTSTART:20260302T160000Z');
+    });
+  });
+
+  it('leaves the invitation it was built from untouched', function () {
+    const before = INVITE_ICS;
+    propose();
+    expect(INVITE_ICS).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+const MEETING_WITH_ROOM_ICS = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+BEGIN:VEVENT
+UID:meeting-uid@test
+DTSTART:20260301T140000Z
+DTEND:20260301T150000Z
+SUMMARY:Design Review
+DTSTAMP:20260101T000000Z
+ORGANIZER;CN=Ada:mailto:ada@example.com
+ATTENDEE;CN=Ada;ROLE=CHAIR;PARTSTAT=ACCEPTED:mailto:ada@example.com
+ATTENDEE;CN=Room 1;CUTYPE=RESOURCE;ROLE=NON-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:room1@example.com
+ATTENDEE;CN=Bo;PARTSTAT=TENTATIVE:mailto:bo@example.com
+SEQUENCE:0
+END:VEVENT
+END:VCALENDAR`;
+
+const unfoldLines = (ics: string) => ics.replace(/\r\n[ \t]/g, '').split(/\r?\n/);
+const attendeeLine = (ics: string, email: string) =>
+  unfoldLines(ics).find((l) => l.startsWith('ATTENDEE') && l.toLowerCase().includes(email));
+
+// What the editor hands back for guests it read from the event.
+const sameGuests = [
+  { email: 'ada@example.com', name: 'Ada', partstat: 'ACCEPTED' },
+  { email: 'room1@example.com', name: 'Room 1', partstat: 'ACCEPTED' },
+  { email: 'bo@example.com', name: 'Bo', partstat: 'TENTATIVE' },
+];
+
+describe('ICSEventHelpers.updateAttendees', function () {
+  it('keeps parameters the editor never supplies when guests are unchanged', function () {
+    const result = ICSEventHelpers.updateAttendees(MEETING_WITH_ROOM_ICS, sameGuests);
+    expect(attendeeLine(result, 'room1@example.com')).toContain('CUTYPE=RESOURCE');
+    expect(attendeeLine(result, 'room1@example.com')).toContain('ROLE=NON-PARTICIPANT');
+    expect(attendeeLine(result, 'ada@example.com')).toContain('ROLE=CHAIR');
+  });
+
+  it('keeps each guest their existing response, without asking them to answer again', function () {
+    const result = ICSEventHelpers.updateAttendees(MEETING_WITH_ROOM_ICS, sameGuests);
+    expect(attendeeLine(result, 'bo@example.com')).toContain('PARTSTAT=TENTATIVE');
+    expect(attendeeLine(result, 'bo@example.com')).not.toContain('RSVP=');
+  });
+
+  it('adds a new guest as a required participant awaiting a response', function () {
+    const result = ICSEventHelpers.updateAttendees(MEETING_WITH_ROOM_ICS, [
+      ...sameGuests,
+      { email: 'cy@example.com', name: 'Cy' },
+    ]);
+    const line = attendeeLine(result, 'cy@example.com');
+    expect(line).toContain('CN=Cy');
+    expect(line).toContain('PARTSTAT=NEEDS-ACTION');
+    expect(line).toContain('ROLE=REQ-PARTICIPANT');
+    expect(line).toContain('RSVP=TRUE');
+  });
+
+  it('adds a guest typed as a bare address without a CN', function () {
+    const result = ICSEventHelpers.updateAttendees(MEETING_WITH_ROOM_ICS, [
+      ...sameGuests,
+      { email: 'cy@example.com', name: null },
+    ]);
+    expect(attendeeLine(result, 'cy@example.com')).not.toContain('CN=');
+  });
+
+  it('removes a guest dropped from the list', function () {
+    const result = ICSEventHelpers.updateAttendees(
+      MEETING_WITH_ROOM_ICS,
+      sameGuests.filter((g) => g.email !== 'bo@example.com')
+    );
+    expect(attendeeLine(result, 'bo@example.com')).toBe(undefined);
+    expect(attendeeLine(result, 'ada@example.com')).not.toBe(undefined);
+  });
+
+  it('matches a guest by address whatever its case', function () {
+    const result = ICSEventHelpers.updateAttendees(MEETING_WITH_ROOM_ICS, [
+      ...sameGuests.filter((g) => g.email !== 'room1@example.com'),
+      { email: 'Room1@Example.com', name: 'Room 1', partstat: 'ACCEPTED' },
+    ]);
+    expect(unfoldLines(result).filter((l) => l.startsWith('ATTENDEE')).length).toBe(3);
+    expect(attendeeLine(result, 'room1@example.com')).toContain('CUTYPE=RESOURCE');
+  });
+});
+
+describe('ICSEventHelpers.applyEditsToException and the guest list', function () {
+  const WEEKLY_WITH_ROOM_ICS = MEETING_WITH_ROOM_ICS.replace(
+    'SEQUENCE:0',
+    'RRULE:FREQ=WEEKLY\nSEQUENCE:0'
+  );
+  const exceptionVevent = (ics: string) =>
+    unfoldLines(ics)
+      .join('\n')
+      .split('BEGIN:VEVENT')
+      .find((v) => v.includes('RECURRENCE-ID'));
+
+  it('keeps the room and the chair when one occurrence is retitled', function () {
+    const { masterIcs, recurrenceId } = ICSEventHelpers.createRecurrenceException(
+      WEEKLY_WITH_ROOM_ICS,
+      Date.UTC(2026, 2, 8, 14) / 1000,
+      Date.UTC(2026, 2, 8, 15) / 1000,
+      Date.UTC(2026, 2, 8, 16) / 1000,
+      false
+    );
+    const result = ICSEventHelpers.applyEditsToException(masterIcs, recurrenceId, {
+      summary: 'Design Review (moved)',
+      attendees: [...sameGuests, { email: 'cy@example.com', name: 'Cy' }],
+    });
+    const exception = exceptionVevent(result);
+    expect(exception).toContain('SUMMARY:Design Review (moved)');
+    expect(exception).toContain('CUTYPE=RESOURCE');
+    expect(exception).toContain('ROLE=CHAIR');
+    expect(exception).toContain('PARTSTAT=TENTATIVE:mailto:bo@example.com');
+    expect(exception).toContain(
+      'PARTSTAT=NEEDS-ACTION;ROLE=REQ-PARTICIPANT;RSVP=TRUE:mailto:cy@example.com'
+    );
+  });
+});
+
+const SOLO_EVENT_ICS = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+BEGIN:VEVENT
+UID:solo-uid@test
+DTSTART:20260301T140000Z
+DTEND:20260301T150000Z
+SUMMARY:Focus Time
+DTSTAMP:20260101T000000Z
+END:VEVENT
+END:VCALENDAR`;
+
+describe('ICSEventHelpers.updateAttendees naming an organizer', function () {
+  const me = { email: 'me@example.com', name: 'Me' };
+  const organizerLines = (ics: string) => unfoldLines(ics).filter((l) => l.startsWith('ORGANIZER'));
+
+  it('names the organizer, attending, when the first guest is added to an event without one', function () {
+    const result = ICSEventHelpers.updateAttendees(
+      SOLO_EVENT_ICS,
+      [{ email: 'bo@example.com' }],
+      me
+    );
+    expect(organizerLines(result)).toEqual(['ORGANIZER;CN=Me:mailto:me@example.com']);
+    expect(attendeeLine(result, 'me@example.com')).toBe(
+      'ATTENDEE;CN=Me;PARTSTAT=ACCEPTED:mailto:me@example.com'
+    );
+  });
+
+  it('promotes the organizer listed as a guest instead of adding a second line', function () {
+    const result = ICSEventHelpers.updateAttendees(
+      SOLO_EVENT_ICS,
+      [{ email: 'bo@example.com' }, { email: 'ME@example.com', name: 'Me' }],
+      me
+    );
+    const mine = unfoldLines(result).filter(
+      (l) => l.startsWith('ATTENDEE') && l.toLowerCase().includes('me@example.com')
+    );
+    expect(mine.length).toBe(1);
+    expect(mine[0]).toContain('PARTSTAT=ACCEPTED');
+    expect(mine[0]).not.toContain('RSVP=');
+  });
+
+  it('writes no CN for an account without a name', function () {
+    const result = ICSEventHelpers.updateAttendees(SOLO_EVENT_ICS, [{ email: 'bo@example.com' }], {
+      email: 'me@example.com',
+    });
+    expect(organizerLines(result)).toEqual(['ORGANIZER:mailto:me@example.com']);
+    expect(attendeeLine(result, 'me@example.com')).not.toContain('CN=');
+  });
+
+  it("does not take over an event that already names someone else's organizer", function () {
+    const result = ICSEventHelpers.updateAttendees(MEETING_WITH_ROOM_ICS, sameGuests, me);
+    expect(organizerLines(result)).toEqual(['ORGANIZER;CN=Ada:mailto:ada@example.com']);
+    expect(attendeeLine(result, 'me@example.com')).toBe(undefined);
+  });
+
+  it('leaves an event with no guests without an organizer', function () {
+    const result = ICSEventHelpers.updateAttendees(SOLO_EVENT_ICS, [], me);
+    expect(organizerLines(result)).toEqual([]);
+  });
+
+  it('names nobody when the caller has no organizer to offer', function () {
+    const result = ICSEventHelpers.updateAttendees(SOLO_EVENT_ICS, [{ email: 'bo@example.com' }]);
+    expect(organizerLines(result)).toEqual([]);
+  });
+});
+
+describe('ICSEventHelpers.applyEditsToException naming an organizer', function () {
+  it('names the organizer on every VEVENT of the series, attending only where there are guests', function () {
+    const weekly = SOLO_EVENT_ICS.replace('DTSTAMP', 'RRULE:FREQ=WEEKLY\nDTSTAMP');
+    const { masterIcs, recurrenceId } = ICSEventHelpers.createRecurrenceException(
+      weekly,
+      Date.UTC(2026, 2, 8, 14) / 1000,
+      Date.UTC(2026, 2, 8, 14) / 1000,
+      Date.UTC(2026, 2, 8, 15) / 1000,
+      false
+    );
+    const result = ICSEventHelpers.applyEditsToException(masterIcs, recurrenceId, {
+      attendees: [{ email: 'bo@example.com', name: 'Bo' }],
+      organizer: { email: 'me@example.com', name: 'Me' },
+    });
+    const [master, exception] = unfoldLines(result).join('\n').split('BEGIN:VEVENT').slice(1);
+    expect(master).toContain('ORGANIZER;CN=Me:mailto:me@example.com');
+    expect(master).not.toContain('ATTENDEE');
+    expect(exception).toContain('ORGANIZER;CN=Me:mailto:me@example.com');
+    expect(exception).toContain('ATTENDEE;CN=Me;PARTSTAT=ACCEPTED:mailto:me@example.com');
+  });
+});
+
+describe('ICSEventHelpers.createICSString and the organizer', function () {
+  const at = (iso: string) => new Date(iso);
+
+  it('lists the organizer as attending alongside the guests', function () {
+    const ics = ICSEventHelpers.createICSString({
+      summary: 'Kickoff',
+      start: at('2026-03-01T14:00:00Z'),
+      end: at('2026-03-01T15:00:00Z'),
+      organizer: { email: 'me@example.com', name: 'Me' },
+      attendees: [{ email: 'bo@example.com', name: 'Bo' }],
+    });
+    expect(unfoldLines(ics)).toContain('ATTENDEE;CN=Me;PARTSTAT=ACCEPTED:mailto:me@example.com');
+  });
+
+  it('names no organizer on an event without guests', function () {
+    const ics = ICSEventHelpers.createICSString({
+      summary: 'Focus time',
+      start: at('2026-03-01T14:00:00Z'),
+      end: at('2026-03-01T15:00:00Z'),
+      organizer: { email: 'me@example.com', name: 'Me' },
+    });
+    expect(ics).not.toContain('ORGANIZER');
+  });
+});
+
+describe('SEQUENCE, so guests see an update as an update', function () {
+  const unfold = (ics: string) => ics.replace(/\r\n[ \t]/g, '').split(/\r?\n/);
+  const seq = (ics: string) => {
+    const line = unfold(ics).find((l) => l.startsWith('SEQUENCE:'));
+    return line ? parseInt(line.split(':')[1], 10) : null;
+  };
+
+  it('advances a revision by exactly one', function () {
+    expect(seq(ICSEventHelpers.bumpEventSequence(SIMPLE_ICS))).toBe(1);
+  });
+
+  it('advances from an existing value rather than resetting', function () {
+    const withSeq = SIMPLE_ICS.replace('SEQUENCE:0', 'SEQUENCE:4');
+    expect(seq(ICSEventHelpers.bumpEventSequence(withSeq))).toBe(5);
+  });
+
+  it('advances an event that never had one, since absent means zero', function () {
+    // RFC 5545 section 3.7.4.
+    const noSeq = SIMPLE_ICS.replace('SEQUENCE:0\r\n', '').replace('SEQUENCE:0\n', '');
+    expect(seq(ICSEventHelpers.bumpEventSequence(noSeq))).toBe(1);
+  });
+
+  it('advances once for a save that touched times, guests and recurrence together', function () {
+    // The popover runs all three on one save, which is still one revision.
+    let ics = ICSEventHelpers.updateEventTimes(SIMPLE_ICS, {
+      start: Math.round(new Date('2026-03-01T16:00:00Z').getTime() / 1000),
+      end: Math.round(new Date('2026-03-01T17:00:00Z').getTime() / 1000),
+      isAllDay: false,
+    });
+    ics = ICSEventHelpers.updateAttendees(ics, [{ email: 'new@example.com' }]);
+    ics = ICSEventHelpers.updateRecurrenceRule(ics, 'FREQ=WEEKLY');
+    expect(seq(ics)).toBe(0);
+    expect(seq(ICSEventHelpers.bumpEventSequence(ics))).toBe(1);
+  });
+
+  it('revises a lone occurrence that arrived without its series', function () {
+    // 8 of the 87 invitations mailed to the dev account are a single VEVENT with a RECURRENCE-ID.
+    const lone = SIMPLE_ICS.replace('DTSTART:', 'RECURRENCE-ID:20260301T140000Z\r\nDTSTART:');
+    expect(seq(ICSEventHelpers.bumpEventSequence(lone))).toBe(1);
+  });
+
+  it('revises a bare VEVENT with no VCALENDAR around it', function () {
+    const bare = SIMPLE_ICS.slice(
+      SIMPLE_ICS.indexOf('BEGIN:VEVENT'),
+      SIMPLE_ICS.indexOf('END:VCALENDAR')
+    ).trim();
+    expect(bare.startsWith('BEGIN:VEVENT')).toBe(true);
+    expect(seq(ICSEventHelpers.bumpEventSequence(bare))).toBe(1);
+  });
+
+  it('refuses to revise an occurrence the file does not contain', function () {
+    expect(() => ICSEventHelpers.bumpEventSequence(SIMPLE_ICS, '20991231T060000Z')).toThrow();
+  });
+
+  it('advances the named occurrence rather than the series', function () {
+    const { masterIcs, recurrenceId } = ICSEventHelpers.createRecurrenceException(
+      DAILY_STANDUP_ICS,
+      T_OCC2_START,
+      T_OCC2_START + 3600,
+      T_OCC2_START + 7200,
+      false
+    );
+    const bumped = ICSEventHelpers.bumpEventSequence(masterIcs, recurrenceId);
+    const sequences = unfold(bumped)
+      .filter((l) => l.startsWith('SEQUENCE:'))
+      .map((l) => parseInt(l.split(':')[1], 10));
+    expect(sequences).toEqual([0, 1]);
+  });
+});
+
+describe('matchEventSequence, so an undo or redo is never below the copy it replaces', function () {
+  const vevents = (ics: string) => {
+    const { root } = parseICSString(ics);
+    return root.getAllSubcomponents('vevent').map((v) => ({
+      recurrenceId: v.getFirstPropertyValue('recurrence-id')?.toString() ?? null,
+      sequence: v.getFirstPropertyValue('sequence'),
+      dtstamp: v.getFirstPropertyValue('dtstamp')?.toString(),
+      dtstart: v.getFirstPropertyValue('dtstart')?.toString(),
+      dtend: v.getFirstPropertyValue('dtend')?.toString(),
+      summary: v.getFirstPropertyValue('summary'),
+    }));
+  };
+  const OLD_DTSTAMP = '2026-01-01T00:00:00Z';
+
+  it('sends an undone move at the SEQUENCE of the move', function () {
+    // Google answered 409 to the pre-move copy re-sent at SEQUENCE:1 while it held 2.
+    const before = SIMPLE_ICS.replace('SEQUENCE:0', 'SEQUENCE:1');
+    const moved = before
+      .replace('DTSTART:20260301T140000Z', 'DTSTART:20260301T141500Z')
+      .replace('SEQUENCE:1', 'SEQUENCE:2');
+    const [undone] = vevents(ICSEventHelpers.matchEventSequence(before, moved));
+    expect(undone.sequence).toBe(2);
+    expect(undone.dtstart).toBe('2026-03-01T14:00:00Z');
+    expect(undone.dtstamp).not.toBe(OLD_DTSTAMP);
+  });
+
+  it('leaves an occurrence nobody changed at the revision last sent', function () {
+    const current = RECURRING_WITH_EXCEPTION_ICS.replace(
+      'DTSTAMP:20260101T000000Z\nSEQUENCE:0',
+      'DTSTAMP:20260105T000000Z\nSEQUENCE:3'
+    ).replace('SEQUENCE:1', 'SEQUENCE:2');
+    const older = RECURRING_WITH_EXCEPTION_ICS.replace(
+      'DTSTART:20260302T080000Z\nDTEND:20260302T090000Z',
+      'DTSTART:20260302T100000Z\nDTEND:20260302T110000Z'
+    );
+    const [master, exception] = vevents(ICSEventHelpers.matchEventSequence(older, current));
+    expect(master.sequence).toBe(3);
+    expect(master.dtstamp).toBe('2026-01-05T00:00:00Z');
+    expect(exception.sequence).toBe(2);
+    expect(exception.dtstamp).not.toBe(OLD_DTSTAMP);
+  });
+
+  it('matches an occurrence the server rewrote into the event zone', function () {
+    // Sent as 20260302T060000Z, stored back by Google as the same instant in America/Chicago.
+    const current = RECURRING_WITH_EXCEPTION_ICS.replace(
+      'DTSTAMP:20260101T000000Z\nSEQUENCE:1',
+      'DTSTAMP:20260105T000000Z\nSEQUENCE:4'
+    );
+    const older = RECURRING_WITH_EXCEPTION_ICS.replace(
+      'RECURRENCE-ID:20260302T060000Z',
+      'RECURRENCE-ID;TZID=America/Chicago:20260302T000000'
+    );
+    const [, exception] = vevents(ICSEventHelpers.matchEventSequence(older, current));
+    expect(exception.sequence).toBe(4);
+    expect(exception.dtstamp).toBe('2026-01-05T00:00:00Z');
+  });
+
+  it('leaves an undone occurrence where its next edit is not below it', function () {
+    // An edit restarts the override from master + 1 (createRecurrenceException), so an undo that
+    // lifts it higher makes that occurrence's next edit a 409.
+    const occurrence = Date.UTC(2026, 2, 2, 6, 0, 0) / 1000;
+    const edit = (ics: string, start: number) => {
+      const { masterIcs, recurrenceId } = ICSEventHelpers.createRecurrenceException(
+        ics,
+        occurrence,
+        start,
+        start + 3600,
+        false
+      );
+      return ICSEventHelpers.bumpEventSequence(masterIcs, recurrenceId);
+    };
+    const edited = edit(RECURRING_WITH_EXCEPTION_ICS, occurrence + 4 * 3600);
+    const undone = ICSEventHelpers.matchEventSequence(RECURRING_WITH_EXCEPTION_ICS, edited);
+    const reEdited = edit(undone, occurrence + 5 * 3600);
+    expect(vevents(reEdited)[1].sequence).not.toBeLessThan(vevents(undone)[1].sequence);
+  });
+
+  it('keeps the own SEQUENCE of an occurrence the last copy did not have', function () {
+    // Undoing the cancellation of an overridden occurrence brings the override back.
+    const masterOnly = RECURRING_WITH_EXCEPTION_ICS.replace(
+      /BEGIN:VEVENT\nUID:master-uid@test\nRECURRENCE-ID[\s\S]*?END:VEVENT\n/,
+      ''
+    );
+    const [master, exception] = vevents(
+      ICSEventHelpers.matchEventSequence(RECURRING_WITH_EXCEPTION_ICS, masterOnly)
+    );
+    expect(master.sequence).toBe(0);
+    expect(exception.recurrenceId).toBe('2026-03-02T06:00:00Z');
+    expect(exception.sequence).toBe(1);
+    expect(exception.dtstamp).not.toBe(OLD_DTSTAMP);
+  });
+
+  it('raises an absent SEQUENCE to the one last sent', function () {
+    const noSeq = SIMPLE_ICS.replace('SEQUENCE:0\n', '');
+    const moved = SIMPLE_ICS.replace(
+      'DTSTART:20260301T140000Z',
+      'DTSTART:20260301T141500Z'
+    ).replace('SEQUENCE:0', 'SEQUENCE:2');
+    const [undone] = vevents(ICSEventHelpers.matchEventSequence(noSeq, moved));
+    expect(undone.sequence).toBe(2);
+  });
+});
+
+describe('revertAddedOverrides, so undo reverts an occurrence on a server that keeps overrides', function () {
+  const vevents = (ics: string) =>
+    parseICSString(ics)
+      .root.getAllSubcomponents('vevent')
+      .map((v) => ({
+        recurrenceId: v.getFirstPropertyValue('recurrence-id')?.toString() ?? null,
+        dtstart: v.getFirstPropertyValue('dtstart')?.toString(),
+        dtend: v.getFirstPropertyValue('dtend')?.toString(),
+        summary: v.getFirstPropertyValue('summary'),
+      }));
+  const withoutOverride = (ics: string) =>
+    ics.replace(/BEGIN:VEVENT\nUID:master-uid@test\nRECURRENCE-ID[\s\S]*?END:VEVENT\n/, '');
+
+  it('puts an override the edit added back at its slot, as the series has it', function () {
+    // Google keeps an override a PUT omits, so undoing the edit that made it would not revert it.
+    const before = withoutOverride(RECURRING_WITH_EXCEPTION_ICS);
+    const [, reverted, ...rest] = vevents(
+      ICSEventHelpers.revertAddedOverrides(before, RECURRING_WITH_EXCEPTION_ICS)
+    );
+    expect(rest).toEqual([]);
+    expect(reverted).toEqual({
+      recurrenceId: '2026-03-02T06:00:00Z',
+      dtstart: '2026-03-02T06:00:00Z',
+      dtend: '2026-03-02T07:00:00Z',
+      summary: 'Morning Sync',
+    });
+  });
+
+  it('adds nothing for a series move, which relabels the overrides it carries', function () {
+    const start = Date.UTC(2026, 2, 1, 6, 0, 0) / 1000;
+    const moved = ICSEventHelpers.shiftInlineExceptions(
+      ICSEventHelpers.updateRecurringEventTimes(
+        RECURRING_WITH_EXCEPTION_ICS,
+        start,
+        start + 3600,
+        start + 7200,
+        false
+      ),
+      3600 * 1000
+    );
+    expect(ICSEventHelpers.revertAddedOverrides(RECURRING_WITH_EXCEPTION_ICS, moved)).toBe(
+      RECURRING_WITH_EXCEPTION_ICS
+    );
+  });
+
+  it('reverts an override when the edit also named an organizer on the series', function () {
+    // Adding the first guest to one occurrence writes ORGANIZER onto every VEVENT (nameOrganizer).
+    const before = withoutOverride(RECURRING_WITH_EXCEPTION_ICS);
+    const current = RECURRING_WITH_EXCEPTION_ICS.replace(
+      'SUMMARY:Morning Sync\n',
+      'SUMMARY:Morning Sync\nORGANIZER:mailto:me@example.com\n'
+    );
+    const [, reverted] = vevents(ICSEventHelpers.revertAddedOverrides(before, current));
+    expect(reverted.dtstart).toBe('2026-03-02T06:00:00Z');
+  });
+
+  it('skips a slot the series cancels', function () {
+    const cancelled = ICSEventHelpers.removeInlineException(
+      RECURRING_WITH_EXCEPTION_ICS,
+      '20260302T060000Z'
+    );
+    expect(ICSEventHelpers.revertAddedOverrides(cancelled, RECURRING_WITH_EXCEPTION_ICS)).toBe(
+      cancelled
+    );
+  });
+
+  it('leaves a lone occurrence, which has no series to rebuild from', function () {
+    const lone = SIMPLE_ICS.replace('DTSTART:', 'RECURRENCE-ID:20260301T140000Z\nDTSTART:');
+    const moved = lone.replace('DTSTART:20260301T140000Z', 'DTSTART:20260301T150000Z');
+    expect(ICSEventHelpers.revertAddedOverrides(lone, moved)).toBe(lone);
+  });
+
+  it('keeps a reverted all-day override to one day across the spring-forward', function () {
+    // 2026-03-08 is 23 hours long in America/Chicago, where specs run.
+    const after = ALL_DAY_RECURRING_ICS.replace(
+      'END:VEVENT\nEND:VCALENDAR',
+      'END:VEVENT\nBEGIN:VEVENT\nUID:all-day-uid@test\nRECURRENCE-ID;VALUE=DATE:20260308\nDTSTART;VALUE=DATE:20260309\nDTEND;VALUE=DATE:20260310\nSUMMARY:Weekly All Day\nDTSTAMP:20260101T000000Z\nSEQUENCE:1\nEND:VEVENT\nEND:VCALENDAR'
+    );
+    const [, reverted] = vevents(
+      ICSEventHelpers.revertAddedOverrides(ALL_DAY_RECURRING_ICS, after)
+    );
+    expect(reverted.dtstart).toBe('2026-03-08');
+    expect(reverted.dtend).toBe('2026-03-09');
+  });
+});
+
+const INVITE_ICS = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:invite-uid@test
+DTSTART:20260301T140000Z
+DTEND:20260301T150000Z
+SUMMARY:Project Kickoff
+DTSTAMP:20260101T000000Z
+ORGANIZER;CN=Ada:mailto:ada@example.com
+ATTENDEE;CN=Ada;ROLE=CHAIR;PARTSTAT=ACCEPTED:mailto:ada@example.com
+ATTENDEE;CN=Me;ROLE=REQ-PARTICIPANT;CUTYPE=INDIVIDUAL;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com
+ATTENDEE;CN=Bo;ROLE=REQ-PARTICIPANT;PARTSTAT=TENTATIVE:mailto:bo@example.com
+SEQUENCE:0
+END:VEVENT
+END:VCALENDAR`;
+
+describe('ICSEventHelpers.updateAttendeeStatus', function () {
+  const attendeeLine = (ics: string, email: string) =>
+    ics
+      .replace(/\r\n[ \t]/g, '')
+      .split(/\r?\n/)
+      .find((l) => l.startsWith('ATTENDEE') && l.toLowerCase().includes(email));
+
+  it('sets PARTSTAT on the matching attendee only', function () {
+    const result = ICSEventHelpers.updateAttendeeStatus(INVITE_ICS, 'me@example.com', 'ACCEPTED');
+    expect(result).not.toBe(null);
+    expect(attendeeLine(result, 'me@example.com')).toContain('PARTSTAT=ACCEPTED');
+    expect(attendeeLine(result, 'ada@example.com')).toContain('PARTSTAT=ACCEPTED');
+    expect(attendeeLine(result, 'bo@example.com')).toContain('PARTSTAT=TENTATIVE');
+  });
+
+  it('preserves the other parameters on the attendee it updates', function () {
+    const result = ICSEventHelpers.updateAttendeeStatus(INVITE_ICS, 'me@example.com', 'DECLINED');
+    const line = attendeeLine(result, 'me@example.com');
+    expect(line).toContain('CN=Me');
+    expect(line).toContain('ROLE=REQ-PARTICIPANT');
+    expect(line).toContain('CUTYPE=INDIVIDUAL');
+  });
+
+  it('drops RSVP=TRUE once a response has been given', function () {
+    const result = ICSEventHelpers.updateAttendeeStatus(INVITE_ICS, 'me@example.com', 'ACCEPTED');
+    expect(attendeeLine(result, 'me@example.com')).not.toContain('RSVP=TRUE');
+  });
+
+  it('matches the address case-insensitively', function () {
+    const result = ICSEventHelpers.updateAttendeeStatus(INVITE_ICS, 'ME@Example.COM', 'TENTATIVE');
+    expect(result).not.toBe(null);
+    expect(attendeeLine(result, 'me@example.com')).toContain('PARTSTAT=TENTATIVE');
+  });
+
+  it('returns null when the address is not an attendee', function () {
+    expect(ICSEventHelpers.updateAttendeeStatus(INVITE_ICS, 'nobody@example.com', 'ACCEPTED')).toBe(
+      null
+    );
+  });
+
+  it('answers every VEVENT of a series, master and inline exceptions alike', function () {
+    const seriesIcs = INVITE_ICS.replace(
+      'END:VCALENDAR',
+      `BEGIN:VEVENT
+UID:invite-uid@test
+RECURRENCE-ID:20260308T140000Z
+DTSTART:20260308T150000Z
+DTEND:20260308T160000Z
+SUMMARY:Project Kickoff
+DTSTAMP:20260101T000000Z
+ATTENDEE;CN=Me;PARTSTAT=NEEDS-ACTION:mailto:me@example.com
+SEQUENCE:0
+END:VEVENT
+END:VCALENDAR`
+    );
+    const result = ICSEventHelpers.updateAttendeeStatus(seriesIcs, 'me@example.com', 'ACCEPTED');
+    const mine = result
+      .replace(/\r\n[ \t]/g, '')
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith('ATTENDEE') && l.toLowerCase().includes('me@example.com'));
+    expect(mine.length).toBe(2);
+    expect(mine.every((l) => l.includes('PARTSTAT=ACCEPTED'))).toBe(true);
+  });
+
+  it('refreshes DTSTAMP so the server sees a newer revision', function () {
+    const result = ICSEventHelpers.updateAttendeeStatus(INVITE_ICS, 'me@example.com', 'ACCEPTED');
+    expect(result).not.toContain('DTSTAMP:20260101T000000Z');
+  });
+});
+
+describe('ICSEventHelpers.stripITIPMethod', function () {
+  const unfold = (ics: string) => ics.replace(/\r\n[ \t]/g, '').split(/\r?\n/);
+
+  it('removes METHOD so the object can be stored as a calendar entry', function () {
+    const result = ICSEventHelpers.stripITIPMethod(INVITE_ICS);
+    expect(unfold(result).find((l) => l.startsWith('METHOD'))).toBe(undefined);
+  });
+
+  it('leaves the event itself intact', function () {
+    const result = ICSEventHelpers.stripITIPMethod(INVITE_ICS);
+    const lines = unfold(result);
+    expect(lines.find((l) => l.startsWith('UID:'))).toBe('UID:invite-uid@test');
+    expect(lines.filter((l) => l.startsWith('ATTENDEE')).length).toBe(3);
+    expect(lines.find((l) => l.startsWith('ORGANIZER'))).toContain('ada@example.com');
+  });
+
+  it('is a no-op on an object that has no METHOD', function () {
+    const once = ICSEventHelpers.stripITIPMethod(INVITE_ICS);
+    expect(ICSEventHelpers.stripITIPMethod(once)).toBe(once);
+  });
+});
+
+describe('ICSEventHelpers.updateOccurrenceAttendeeStatus', function () {
+  const GUESTS = [
+    'ORGANIZER:mailto:ada@example.com',
+    'ATTENDEE;PARTSTAT=ACCEPTED:mailto:ada@example.com',
+    'ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com',
+  ];
+  const vevent = (...lines: string[]) => [
+    'BEGIN:VEVENT',
+    'UID:huddle@test',
+    ...lines,
+    'DTSTAMP:20260101T000000Z',
+    'END:VEVENT',
+  ];
+  const vcalendar = (...vevents: string[][]) =>
+    [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Test//Test//EN',
+      ...vevents.flat(),
+      'END:VCALENDAR',
+    ].join('\r\n');
+  const SERIES = vevent(
+    'DTSTART:20250923T140000Z',
+    'DTEND:20250923T141500Z',
+    'RRULE:FREQ=WEEKLY',
+    'SUMMARY:Huddle',
+    ...GUESTS
+  );
+  const OTHER_WEEK = vevent(
+    'RECURRENCE-ID:20260908T140000Z',
+    'DTSTART:20260909T140000Z',
+    'DTEND:20260909T141500Z',
+    'SUMMARY:Huddle (another week)',
+    ...GUESTS
+  );
+  const SYNCED_WEEK = vevent(
+    'RECURRENCE-ID:20260915T140000Z',
+    'DTSTART:20260915T160000Z',
+    'DTEND:20260915T161500Z',
+    'SUMMARY:Huddle (as synced)',
+    ...GUESTS
+  );
+  const EMAILED = vcalendar(
+    ['METHOD:REQUEST'],
+    vevent(
+      'RECURRENCE-ID:20260915T140000Z',
+      'DTSTART:20260915T150000Z',
+      'DTEND:20260915T151500Z',
+      'SUMMARY:Huddle',
+      ...GUESTS
+    )
+  );
+  const unfold = (ics: string) => ics.replace(/\r\n[ \t]/g, '');
+  const veventsOf = (ics: string) => unfold(ics).split('BEGIN:VEVENT').slice(1);
+  const myLine = (block: string) =>
+    block.split(/\r?\n/).find((l) => l.startsWith('ATTENDEE') && l.includes('me@example.com'));
+  const answer = (copy: string, invite = EMAILED, email = 'me@example.com') =>
+    ICSEventHelpers.updateOccurrenceAttendeeStatus(copy, invite, email, 'ACCEPTED');
+
+  it('changes the occurrence the invitation names and no other VEVENT', function () {
+    const result = answer(vcalendar(SERIES, OTHER_WEEK, SYNCED_WEEK));
+    const [master, otherWeek, synced] = veventsOf(result);
+    expect(myLine(master)).toBe('ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com');
+    expect(myLine(otherWeek)).toBe(
+      'ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com'
+    );
+    expect(myLine(synced)).toBe('ATTENDEE;PARTSTAT=ACCEPTED:mailto:me@example.com');
+    expect(synced).toContain('SUMMARY:Huddle (as synced)');
+  });
+
+  it('stamps only the VEVENT it changed', function () {
+    const [master, , synced] = veventsOf(answer(vcalendar(SERIES, OTHER_WEEK, SYNCED_WEEK)));
+    expect(master).toContain('DTSTAMP:20260101T000000Z');
+    expect(synced).not.toContain('DTSTAMP:20260101T000000Z');
+  });
+
+  it('stores the emailed occurrence as an exception when the copy has none for it', function () {
+    const result = answer(vcalendar(SERIES, OTHER_WEEK));
+    const vevents = veventsOf(result);
+    expect(vevents.length).toBe(3);
+    const added = vevents[2];
+    expect(added).toContain('RECURRENCE-ID:20260915T140000Z');
+    expect(added).toContain('DTSTART:20260915T150000Z');
+    expect(added).toContain('SUMMARY:Huddle');
+    expect(myLine(added)).toBe('ATTENDEE;PARTSTAT=ACCEPTED:mailto:me@example.com');
+    expect(myLine(vevents[0])).toContain('PARTSTAT=NEEDS-ACTION');
+    expect(myLine(vevents[1])).toContain('PARTSTAT=NEEDS-ACTION');
+    expect(result).not.toContain('METHOD');
+  });
+
+  it('brings the VTIMEZONE of an occurrence emailed in a zone the copy lacks', function () {
+    const berlin = EMAILED.replace(
+      'DTSTART:20260915T150000Z\r\nDTEND:20260915T151500Z',
+      'DTSTART;TZID=Europe/Berlin:20260915T170000\r\nDTEND;TZID=Europe/Berlin:20260915T171500'
+    );
+    const result = answer(vcalendar(SERIES), berlin);
+    expect(result).toContain('DTSTART;TZID=Europe/Berlin:20260915T170000');
+    expect(result).toContain('BEGIN:VTIMEZONE');
+    expect(result).toContain('TZID:Europe/Berlin');
+  });
+
+  it('answers nobody when the occurrence does not list us', function () {
+    expect(answer(vcalendar(SERIES, SYNCED_WEEK), EMAILED, 'stranger@example.com')).toBe(null);
+    expect(answer(vcalendar(SERIES), EMAILED, 'stranger@example.com')).toBe(null);
+  });
+
+  it('refuses an invitation that names no occurrence', function () {
+    const whole = EMAILED.replace('RECURRENCE-ID:20260915T140000Z\r\n', '');
+    expect(() => answer(vcalendar(SERIES), whole)).toThrow(
+      'The invitation names no occurrence: it has no RECURRENCE-ID'
+    );
+  });
+
+  it('refuses a copy that is a bare VEVENT, which has nowhere to hold an exception', function () {
+    expect(() => answer(SERIES.join('\r\n'))).toThrow();
+  });
+});
+
+describe('TRANSP, the Show As of an event', function () {
+  const transpsOf = (ics: string) =>
+    ics
+      .split('BEGIN:VEVENT')
+      .slice(1)
+      .map((v) => (/^TRANSP:(.*)$/m.exec(v) || [])[1] || null);
+  const createOptions = {
+    summary: 'Offsite',
+    start: new Date(Date.UTC(2026, 2, 1, 14)),
+    end: new Date(Date.UTC(2026, 2, 1, 15)),
+  };
+
+  it('is written on a new event when one is given', function () {
+    const ics = ICSEventHelpers.createICSString({ ...createOptions, transparency: 'TRANSPARENT' });
+    expect(transpsOf(ics)).toEqual(['TRANSPARENT']);
+  });
+
+  it('is left out of a new event when none is given, which reads as busy', function () {
+    expect(transpsOf(ICSEventHelpers.createICSString(createOptions))).toEqual([null]);
+  });
+
+  it('replaces the series value rather than adding a second one', function () {
+    const busy = SIMPLE_ICS.replace('SEQUENCE:0', 'SEQUENCE:0\nTRANSP:OPAQUE');
+    const ics = ICSEventHelpers.updateEventProperty(busy, 'transp', 'TRANSPARENT');
+    expect(transpsOf(ics)).toEqual(['TRANSPARENT']);
+  });
+
+  it('is set on the named exception only', function () {
+    const ics = ICSEventHelpers.applyEditsToException(
+      RECURRING_WITH_EXCEPTION_ICS,
+      '20260302T060000Z',
+      { transparency: 'TRANSPARENT' }
+    );
+    expect(transpsOf(ics)).toEqual([null, 'TRANSPARENT']);
   });
 });

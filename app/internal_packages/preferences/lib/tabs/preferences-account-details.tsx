@@ -10,6 +10,7 @@ import {
   Account,
   AccountAutoaddress,
 } from 'mailspring-exports';
+import { developerToolsAvailable } from '../../../../src/developer-tools';
 
 interface AutoaddressControlProps {
   autoaddress: AccountAutoaddress;
@@ -53,6 +54,7 @@ class AutoaddressControl extends Component<AutoaddressControlProps> {
 class PreferencesAccountDetails extends Component<
   {
     account: Account;
+    isOffline: boolean;
     onAccountUpdated: (account: Account, newAccount: Account) => void;
   },
   {
@@ -195,7 +197,7 @@ class PreferencesAccountDetails extends Component<
   };
 
   _onContactSupport = () => {
-    shell.openExternal('https://support.getmailspring.com/hc/en-us/requests/new');
+    shell.openExternal('https://community.getmailspring.com/c/sync/22');
   };
 
   _onShowErrorDetails = async () => {
@@ -234,6 +236,7 @@ class PreferencesAccountDetails extends Component<
       webPreferences: {
         javascript: false,
         nodeIntegration: false,
+        devTools: developerToolsAvailable(),
       },
     });
     win.loadURL(`file://${filepath}`);
@@ -241,9 +244,13 @@ class PreferencesAccountDetails extends Component<
 
   // Renderers
 
-  _renderErrorDetail(message, actions: { text: string; action: () => void }[]) {
+  _renderErrorDetail(
+    message,
+    actions: { text: string; action: () => void }[],
+    { offline }: { offline?: boolean } = {}
+  ) {
     return (
-      <div className="account-error-detail">
+      <div className={`account-error-detail${offline ? ' offline' : ''}`}>
         <div className="message">{message}</div>
         <div style={{ display: 'flex', flexShrink: 0 }}>
           {actions.map(({ text, action }) => (
@@ -256,21 +263,36 @@ class PreferencesAccountDetails extends Component<
     );
   }
 
+  _authFailureMessage(account: Account) {
+    if (!account.hasCertificateSyncError()) {
+      return localized(
+        `Mailspring can no longer authenticate with %@. The password or authentication may have changed.`,
+        account.emailAddress
+      );
+    }
+    // Gmail and Microsoft servers always present a trusted certificate, so there is nothing for
+    // the user to review and accept: something on the network is intercepting the connection.
+    if (account.usesOAuth()) {
+      return localized(
+        `Mailspring can't verify the server for %@. Its certificate is not trusted, which can happen when antivirus or network software intercepts secure connections.`,
+        account.emailAddress
+      );
+    }
+    return localized(
+      `Mailspring can't verify the server for %@. Its certificate is not trusted, or has changed since you accepted it. Reconnect to review it.`,
+      account.emailAddress
+    );
+  }
+
   _renderSyncErrorDetails() {
     const { account } = this.state;
 
     switch (account.syncState) {
       case Account.SYNC_STATE_AUTH_FAILED:
-        return this._renderErrorDetail(
-          localized(
-            `Mailspring can no longer authenticate with %@. The password or authentication may have changed.`,
-            account.emailAddress
-          ),
-          [
-            { text: localized('Reconnect'), action: this._onReconnect },
-            { text: localized('Error Details...'), action: this._onShowErrorDetails },
-          ]
-        );
+        return this._renderErrorDetail(this._authFailureMessage(account), [
+          { text: localized('Reconnect'), action: this._onReconnect },
+          { text: localized('Error Details...'), action: this._onShowErrorDetails },
+        ]);
       case Account.SYNC_STATE_ERROR:
         return this._renderErrorDetail(
           localized(
@@ -282,7 +304,23 @@ class PreferencesAccountDetails extends Component<
           ]
         );
       default:
-        return null;
+        if (!this.props.isOffline) {
+          return null;
+        }
+        return this._renderErrorDetail(
+          localized(
+            `Mailspring can't connect to %@ and will keep retrying. This usually means your computer is offline. If your internet connection is working, your mail provider may be having trouble.`,
+            account.settings.imap_host || account.emailAddress
+          ),
+          [
+            {
+              text: localized('Try now'),
+              action: () => AppEnv.mailsyncBridge.sendSyncMailNow(),
+            },
+            { text: localized('Error Details...'), action: this._onShowErrorDetails },
+          ],
+          { offline: true }
+        );
     }
   }
 

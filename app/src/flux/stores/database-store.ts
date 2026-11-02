@@ -20,7 +20,7 @@ const AGENT_PATH = path.join(path.dirname(__filename), 'database-agent.js');
 const BASE_RETRY_LOCK_DELAY = 50;
 const MAX_RETRY_LOCK_DELAY = 500;
 
-type AgentResponse = { results: any[]; agentTime: number };
+type AgentResponse = { results: any[]; agentTime: number; error?: string };
 type SQLString = string;
 type SQLValue = boolean | string | number;
 
@@ -65,6 +65,15 @@ async function openDatabase(dbPath: string) {
     db.pragma(`main.page_size = 8192`);
     db.pragma(`main.cache_size = 20000`);
     db.pragma(`main.synchronous = NORMAL`);
+
+    // https://www.sqlite.org/mmap.html
+    // Pages inside the mapping are read straight from the OS page cache instead of being
+    // copied into SQLite's cache. The mapping covers the start of the file, not its hottest
+    // pages, so it is sized to SQLite's maximum (SQLITE_MAX_MMAP_SIZE, 2 GB). On Windows a
+    // mapping stops the sync engine from truncating the file; SQLite ignores that failure
+    // (ERROR_USER_MAPPED_FILE in winTruncate) and the file keeps its size until a later
+    // truncate succeeds.
+    db.pragma(`mmap_size = 2147418112`);
     return db;
   } catch (err) {
     handleUnrecoverableDatabaseError(err);
@@ -245,7 +254,11 @@ class DatabaseStore extends MailspringStore {
         }
         resolve(results);
       } else {
-        const { results, agentTime } = await this._executeInBackground(query, values);
+        const { results, agentTime, error } = await this._executeInBackground(query, values);
+        if (error) {
+          reject(new Error(`DatabaseStore: Query ${query} failed in background: ${error}`));
+          return;
+        }
         const msec = Date.now() - start;
         if (debugVerbose.enabled) {
           const q = `🔶 (${msec}ms) Background: ${query}`;
@@ -272,7 +285,7 @@ class DatabaseStore extends MailspringStore {
 
     const schemaChangedStr = 'database schema has changed';
 
-    const retryableRegexp = new RegExp(`(database is locked)||(${schemaChangedStr})`, 'i');
+    const retryableRegexp = new RegExp(`(database is locked)|(${schemaChangedStr})`, 'i');
 
     // Because other processes may be writing to the database and modifying the
     // schema (running ANALYZE, etc.), we may `prepare` a statement and then be
@@ -351,7 +364,13 @@ class DatabaseStore extends MailspringStore {
     if (!this._agent && !this._agentSpawnFailed) {
       this._agentOpenQueries = {};
       try {
-        this._agent = childProcess.fork(AGENT_PATH, [], { silent: true });
+        // Pass a null-prototype copy of the environment so a prototype-pollution
+        // bug elsewhere in the process cannot inject inherited properties into
+        // this forked Node agent's environment. See GHSA-gjr7-3mj2-cr54.
+        this._agent = childProcess.fork(AGENT_PATH, [], {
+          silent: true,
+          env: Object.assign(Object.create(null), process.env),
+        });
         if (this._agent.stdout)
           this._agent.stdout.on('data', (data) => console.log(data.toString()));
         if (this._agent.stderr)
@@ -366,9 +385,9 @@ class DatabaseStore extends MailspringStore {
           this._agent = null;
         });
         this._agent.on('message', (message: Record<string, any>) => {
-          const { type, id, results, agentTime } = message;
-          if (type === 'results' && this._agentOpenQueries[id]) {
-            this._agentOpenQueries[id]({ results, agentTime });
+          const { type, id, results, agentTime, error } = message;
+          if ((type === 'results' || type === 'error') && this._agentOpenQueries[id]) {
+            this._agentOpenQueries[id]({ results, agentTime, error });
             delete this._agentOpenQueries[id];
           }
         });

@@ -1,4 +1,5 @@
 import _ from 'underscore';
+import { ipcRenderer } from 'electron';
 import MailspringStore from 'mailspring-store';
 import { AccountStore } from './account-store';
 import WorkspaceStore from './workspace-store';
@@ -18,6 +19,23 @@ class FocusedPerspectiveStore extends MailspringStore {
     this.listenTo(Actions.focusDefaultMailboxPerspectiveForAccounts, this._onFocusDefault);
     this.listenTo(Actions.ensureCategoryIsFocused, this._onEnsureCategoryIsFocused);
     this._listenToCommands();
+
+    // Sent by the main process for application:show-mail.
+    if (AppEnv.isMainWindow()) {
+      ipcRenderer.on('show-mail', () => this.showMail());
+    }
+  }
+
+  /** Whether the main window shows mail rather than another section, such as the calendar. */
+  isShowingMail() {
+    return WorkspaceStore.rootSheet() === this._current.sheet();
+  }
+
+  /** Leaves another section of the main window for the mailbox that was last showing. */
+  showMail() {
+    if (!this.isShowingMail()) {
+      Actions.selectRootSheet(this._current.sheet());
+    }
   }
 
   current(): MailboxPerspective {
@@ -42,6 +60,7 @@ class FocusedPerspectiveStore extends MailspringStore {
     AppEnv.commands.add(document.body, {
       'navigation:go-to-inbox': () => this._setPerspectiveByName('inbox'),
       'navigation:go-to-sent': () => this._setPerspectiveByName('sent'),
+      'navigation:go-to-unread': () => this._setUnreadPerspective(),
       'navigation:go-to-starred': () =>
         this._setPerspective(MailboxPerspective.forStarred(this._current.accountIds)),
       'navigation:go-to-drafts': () =>
@@ -105,7 +124,7 @@ class FocusedPerspectiveStore extends MailspringStore {
       this._initialized = false;
     }
 
-    this._setPerspective(perspective, sidebarAccountIds);
+    this._setPerspective(perspective, sidebarAccountIds, { keepSection: true });
   }
 
   // Inbound Events
@@ -113,7 +132,9 @@ class FocusedPerspectiveStore extends MailspringStore {
     if (!this._initialized) {
       this._initializeFromSavedState();
     } else if (!this._isValidPerspective(this._current)) {
-      this._setPerspective(this._defaultPerspective(this._current.accountIds));
+      this._setPerspective(this._defaultPerspective(this._current.accountIds), undefined, {
+        keepSection: true,
+      });
     }
   };
 
@@ -134,13 +155,13 @@ class FocusedPerspectiveStore extends MailspringStore {
    */
   _onFocusDefault = (
     accountsOrIds,
-    { sidebarAccountIds }: { sidebarAccountIds?: string[] } = {}
+    { sidebarAccountIds, keepSection }: { sidebarAccountIds?: string[]; keepSection?: boolean } = {}
   ) => {
     if (!accountsOrIds) {
       return;
     }
     const perspective = this._defaultPerspective(accountsOrIds);
-    this._setPerspective(perspective, sidebarAccountIds || perspective.accountIds);
+    this._setPerspective(perspective, sidebarAccountIds || perspective.accountIds, { keepSection });
   };
 
   _onEnsureCategoryIsFocused = (categoryName: string, accountIds: string[] = []) => {
@@ -162,7 +183,23 @@ class FocusedPerspectiveStore extends MailspringStore {
     return perspective;
   }
 
-  _setPerspective(perspective, sidebarAccountIds?: string[]) {
+  /**
+   * `keepSection` is for changes the user didn't ask for, such as an account being added or
+   * removed in Preferences: they update the mailbox without leaving another section for it.
+   */
+  _setPerspective(
+    perspective,
+    sidebarAccountIds?: string[],
+    { keepSection = false }: { keepSection?: boolean } = {}
+  ) {
+    const wasShowingMail = this.isShowingMail();
+    const desired = perspective.sheet();
+    if (desired && WorkspaceStore.rootSheet() !== desired && (wasShowingMail || !keepSection)) {
+      Actions.selectRootSheet(desired);
+      // Refused while the calendar holds a change the user keeps editing.
+      if (WorkspaceStore.rootSheet() !== desired) return;
+    }
+
     let shouldTrigger = false;
 
     if (!perspective.isEqual(this._current)) {
@@ -184,17 +221,19 @@ class FocusedPerspectiveStore extends MailspringStore {
       this.trigger();
     }
 
-    const desired = perspective.sheet();
-
-    // Always switch to the correct sheet and pop to root when perspective set
-    if (desired && WorkspaceStore.rootSheet() !== desired) {
-      Actions.selectRootSheet(desired);
-    }
-
-    const top = WorkspaceStore.topSheet();
-    if (![WorkspaceStore.Sheet.Preferences, WorkspaceStore.Sheet.Threads].includes(top)) {
+    if (WorkspaceStore.topSheet() !== WorkspaceStore.Sheet.Threads) {
       Actions.popToRootSheet();
     }
+  }
+
+  _setUnreadPerspective() {
+    const inboxes = this._current.accountIds
+      .map((id) => CategoryStore.getCategoryByRole(id, 'inbox'))
+      .filter(Boolean);
+    if (inboxes.length === 0) {
+      return;
+    }
+    this._setPerspective(MailboxPerspective.forUnread(inboxes));
   }
 
   _setPerspectiveByName(categoryName: string) {

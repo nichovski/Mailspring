@@ -31,9 +31,8 @@ function applyExtensionTransforms(draft: Message, recipient: Contact) {
     draft.body = before;
     return after;
   } else {
-    const fragment = document.createDocumentFragment();
-    const draftBodyRootNode = document.createElement('root');
-    fragment.appendChild(draftBodyRootNode);
+    // An inert document, so images in the body aren't fetched while it is transformed
+    const draftBodyRootNode = document.implementation.createHTMLDocument('').createElement('root');
     draftBodyRootNode.innerHTML = draft.body;
 
     for (const ext of extensions) {
@@ -55,6 +54,11 @@ export class SendDraftTask extends Task {
     task.headerMessageId = task.draft.headerMessageId;
     task.silent = silent;
 
+    // Graph sends one message to every recipient, so tracking extensions get a null recipient
+    // and produce one body for all of them (see recipientIsUnknowable). The untracked `self`
+    // body is still sent separately: mailsync files it as the Sent copy.
+    const account = AccountStore.accountForId(task.draft.accountId);
+    const sendsViaGraph = !!(account && account.sendsViaGraph());
     const separateBodies = ComposerExtensionRegistry.extensions().some(
       (ext) => ext.needsPerRecipientBodies && ext.needsPerRecipientBodies(task.draft)
     );
@@ -69,6 +73,8 @@ export class SendDraftTask extends Task {
       task.perRecipientBodies = {
         self: task.draft.body,
       };
+    }
+    if (separateBodies && !sendsViaGraph) {
       task.draft.participants({ includeFrom: false, includeBcc: true }).forEach((recipient) => {
         task.perRecipientBodies[recipient.email] = applyExtensionTransforms(task.draft, recipient);
       });
@@ -137,6 +143,7 @@ export class SendDraftTask extends Task {
     Actions.draftDeliverySucceeded({
       headerMessageId: this.draft.headerMessageId,
       accountId: this.draft.accountId,
+      files: this.draft.files,
     });
 
     // Play the sending sound
@@ -181,6 +188,32 @@ export class SendDraftTask extends Task {
         emails,
         LocalizedErrorStrings[smtpError]
       );
+    } else if (key === 'smtp-auth-disabled') {
+      // Signing in through OAuth moves a Microsoft account to Graph sending, unless its
+      // organization declines Mail.Send: an Office 365 or Outlook account by reconnecting, an
+      // IMAP/SMTP account (outlook.com and Hotmail ones included) by being added again with
+      // Microsoft sign-in. A shared mailbox sends over SMTP as its owner and never moves, so
+      // only an administrator can help it.
+      const account = AccountStore.accountForId(this.draft.accountId);
+      const isSharedMailbox =
+        account &&
+        account.settings.smtp_username &&
+        account.settings.smtp_username.toLowerCase() !== account.emailAddress.toLowerCase();
+      const signsInWithMicrosoft = account && ['office365', 'outlook'].includes(account.provider);
+      if (!account || isSharedMailbox) {
+        errorMessage = localized(
+          'Microsoft has turned off SMTP sending for this mailbox. An administrator must enable SMTP AUTH for it before Mailspring can send from it.'
+        );
+      } else if (signsInWithMicrosoft) {
+        errorMessage = localized(
+          "Microsoft has turned off SMTP sending for this account. Reconnect the account in Preferences > Accounts so Mailspring can send through Microsoft 365. If Microsoft asks for an administrator's approval, an administrator must approve Mailspring's mail permissions or enable SMTP AUTH."
+        );
+      } else {
+        errorMessage = localized(
+          'Microsoft has turned off SMTP sending for this account. Remove it in Preferences > Accounts and add it again by choosing Outlook.com or Office 365, so Mailspring signs in with Microsoft and can send through Microsoft 365.'
+        );
+      }
+      errorDetail = debuginfo;
     } else if (key === 'send-failed') {
       errorMessage = localized(
         `Sorry, Mailspring was unable to deliver this message: %@`,

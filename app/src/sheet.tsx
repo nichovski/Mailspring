@@ -14,7 +14,14 @@ const COLUMN_META: Record<string, { role: string; label: () => string }> = {
   ThreadList: { role: 'region', label: () => localized('Thread list') },
   MessageList: { role: 'region', label: () => localized('Messages') },
   MessageListSidebar: { role: 'complementary', label: () => localized('Contact panel') },
+  CalendarSidebar: { role: 'complementary', label: () => localized('Calendar sidebar') },
+  CalendarContent: { role: 'region', label: () => localized('Calendar') },
+  ActivityContent: { role: 'region', label: () => localized('Activity') },
 };
+
+// Mail and Calendar share one sidebar width, so switching sections leaves the toolbar in place.
+const COLUMN_WIDTH_KEYS: Record<string, string> = { CalendarSidebar: 'RootSidebar' };
+const columnWidthKey = (id: string) => COLUMN_WIDTH_KEYS[id] || id;
 
 interface SheetLocation {
   id: string;
@@ -61,9 +68,8 @@ export default class Sheet extends React.Component<SheetProps, SheetState> {
   }
 
   // Not Utils.isEqualReact: it ignores `id` keys, and SheetDeclarations differ from each
-  // other almost entirely by ids. Drafts and Activity are structurally identical apart from
-  // ids, so isEqualReact treats switching between them as a no-op and the root sheet keeps
-  // rendering the previous sheet's columns.
+  // other almost entirely by ids, so switching between two sheets with the same columns
+  // would be a no-op and the root sheet would keep rendering the previous sheet's columns.
   shouldComponentUpdate(nextProps: SheetProps, nextState: SheetState) {
     return (
       !Utils.isEqual(nextProps, this.props, { functionsAreEqual: true }) ||
@@ -143,7 +149,7 @@ export default class Sheet extends React.Component<SheetProps, SheetState> {
   }
 
   _onColumnResize = (column: SheetColumn, width: number) => {
-    AppEnv.storeColumnWidth({ id: column.location.id, width: width });
+    AppEnv.storeColumnWidth({ id: columnWidthKey(column.location.id), width: width });
     this.props.onColumnSizeChanged(this);
   };
 
@@ -190,7 +196,7 @@ export default class Sheet extends React.Component<SheetProps, SheetState> {
           return m;
         }, 0);
 
-        const width = AppEnv.getColumnWidth(location.id);
+        const width = AppEnv.getColumnWidth(columnWidthKey(location.id));
         const col = { maxWidth, minWidth, location, width };
         state.columns.push(col);
 

@@ -1,15 +1,34 @@
+import moment from 'moment';
+import { AccountStore, Actions, SyncbackEventTask, TaskQueue } from 'mailspring-exports';
+import 'moment/locale/de';
+import 'moment/locale/ko';
+import 'moment/locale/lb';
+import 'moment/locale/ne';
 // Import directly from the source file; the plugin isn't registered in mailspring-exports.
 import {
   inclusiveAllDayEnd,
   shiftEndWithStart,
   clampEnd,
+  textColorOnFill,
+  formatShortTime,
+  formatShortTimeRange,
+  formatTime,
+  formatEventTimeRange,
+  formatOccurrenceTime,
+  createCalendarEvent,
+  allDayToggleTimes,
 } from '../internal_packages/main-calendar/lib/core/calendar-helpers';
+import { allDayOccurrence, timedOccurrence } from './fixtures/calendar-view-props';
+import { use24HourClock } from './fixtures/use-24-hour-clock';
 import {
   shiftedDayStartUnix,
   dayStartUnix,
   calendarDateFromUnix,
   calendarDaysBetween,
 } from '../src/calendar-date';
+
+// Each moment/locale import above switches the global locale as it loads.
+moment.locale('en');
 
 /** Local midnight, as unix seconds — all-day times are built from local date components */
 function localDay(year: number, month1Indexed: number, day: number): number {
@@ -170,5 +189,257 @@ describe('all-day day math at a DST transition', function () {
       const from = calendarDateFromUnix(shiftedDayStartUnix(start, 1));
       expect(calendarDaysBetween(from, calendarDateFromUnix(moved))).toBe(3);
     });
+  });
+});
+
+describe('allDayToggleTimes', function () {
+  const clock = (unix: number) => moment.unix(unix).format('YYYY-MM-DD HH:mm');
+
+  it('turns a timed event into the whole days it covers', function () {
+    // 22:00 to midnight covers one day, not two.
+    const lateEvening = timedOccurrence('a', '2026-06-21T22:00', '2026-06-22T00:00');
+    expect(allDayToggleTimes(lateEvening, true)).toEqual({
+      start: localDay(2026, 6, 21),
+      end: localDay(2026, 6, 22),
+    });
+    const overnight = timedOccurrence('b', '2026-06-21T22:00', '2026-06-23T09:00');
+    expect(allDayToggleTimes(overnight, true)).toEqual({
+      start: localDay(2026, 6, 21),
+      end: localDay(2026, 6, 24),
+    });
+  });
+
+  it('keeps whole days across the fall-back day, which is 25 hours long', function () {
+    const fallBack = timedOccurrence('c', '2026-11-01T10:00', '2026-11-01T11:00');
+    const { start, end } = allDayToggleTimes(fallBack, true);
+    expect([clock(start), clock(end)]).toEqual(['2026-11-01 00:00', '2026-11-02 00:00']);
+  });
+
+  it('turns an all-day event into 9 to 10 AM on its first day, on a spring-forward day too', function () {
+    const springForward = allDayOccurrence('d', '2026-03-08', '2026-03-10');
+    const { start, end } = allDayToggleTimes(springForward, false);
+    expect([clock(start), clock(end)]).toEqual(['2026-03-08 09:00', '2026-03-08 10:00']);
+  });
+});
+
+describe('textColorOnFill', function () {
+  it('puts black text on a light calendar color', function () {
+    expect(textColorOnFill({ r: 172, g: 222, b: 230 })).toBe('black'); // pale cyan
+    expect(textColorOnFill({ r: 255, g: 204, b: 0 })).toBe('black'); // yellow
+  });
+
+  it('puts white text on a dark calendar color', function () {
+    expect(textColorOnFill({ r: 23, g: 71, b: 173 })).toBe('white'); // deep blue
+    expect(textColorOnFill({ r: 176, g: 30, b: 40 })).toBe('white'); // dark red
+  });
+});
+
+describe('formatShortTime', function () {
+  const at = (hour: number, minute: number) => new Date(2026, 8, 22, hour, minute).getTime() / 1000;
+  afterEach(() => moment.locale('en'));
+
+  it('drops :00 on the hour, and the space before the meridiem, on a 12-hour clock', function () {
+    moment.locale('en');
+    expect(formatShortTime(at(10, 0))).toBe('10AM');
+    expect(formatShortTime(at(22, 0))).toBe('10PM');
+  });
+
+  it('keeps the minutes off the hour', function () {
+    moment.locale('en');
+    expect(formatShortTime(at(10, 30))).toBe('10:30AM');
+  });
+
+  it('keeps a 24-hour clock whole, since a bare hour does not read as a time', function () {
+    moment.locale('de');
+    expect(formatShortTime(at(10, 0))).toBe('10:00');
+  });
+
+  it('shortens a 12-hour locale whose meridiem comes first', function () {
+    moment.locale('ko');
+    expect(formatShortTime(at(22, 0))).toBe(moment.unix(at(22, 0)).format('A h'));
+  });
+});
+
+describe('formatTime', function () {
+  const at = (hour: number, minute: number) => new Date(2026, 8, 22, hour, minute).getTime() / 1000;
+  afterEach(() => moment.locale('en'));
+
+  it('follows a 12-hour locale', function () {
+    moment.locale('en');
+    expect(formatTime(at(15, 15))).toBe('3:15 PM');
+    expect(formatTime(at(15, 0))).toBe('3:00 PM');
+  });
+
+  it('follows a 24-hour locale', function () {
+    moment.locale('de');
+    expect(formatTime(at(15, 15))).toBe('15:15');
+    expect(formatTime(at(15, 0))).toBe('15:00');
+  });
+
+  it('drops the minutes on the hour only when asked, and only on a 12-hour clock', function () {
+    moment.locale('en');
+    expect(formatTime(at(15, 0), true)).toBe('3 PM');
+    expect(formatTime(at(15, 15), true)).toBe('3:15 PM');
+    moment.locale('de');
+    expect(formatTime(at(15, 0), true)).toBe('15:00');
+  });
+});
+
+describe('formatEventTimeRange', function () {
+  const at = (hour: number, minute: number) => new Date(2026, 8, 22, hour, minute).getTime() / 1000;
+  afterEach(() => moment.locale('en'));
+
+  it('names a shared meridiem once, after the end', function () {
+    moment.locale('en');
+    expect(formatEventTimeRange(at(12, 0), at(13, 0), false)).toBe('12 – 1PM');
+    expect(formatEventTimeRange(at(13, 15), at(14, 30), false)).toBe('1:15 – 2:30PM');
+  });
+
+  it('names both meridiems when they differ', function () {
+    moment.locale('en');
+    expect(formatEventTimeRange(at(11, 30), at(12, 30), false)).toBe('11:30AM – 12:30PM');
+  });
+
+  it('follows a 24-hour locale', function () {
+    moment.locale('de');
+    expect(formatEventTimeRange(at(12, 0), at(13, 0), false)).toBe('12:00 – 13:00');
+  });
+
+  it('gives nothing for an all-day event or one shorter than an hour', function () {
+    moment.locale('en');
+    expect(formatEventTimeRange(at(12, 0), at(13, 0), true)).toBeNull();
+    expect(formatEventTimeRange(at(12, 0), at(12, 59), false)).toBeNull();
+  });
+});
+
+describe('formatOccurrenceTime', function () {
+  afterEach(() => moment.locale('en'));
+
+  it('gives a timed occurrence its day and times', function () {
+    moment.locale('en');
+    const sameDay = timedOccurrence('x', '2026-03-03T15:00:00', '2026-03-03T16:30:00');
+    expect(formatOccurrenceTime(sameDay)).toBe('Tue, Mar 3 \u00B7 3:00 PM - 4:30 PM');
+    const twoDays = timedOccurrence('x', '2026-03-03T15:00:00', '2026-03-04T16:30:00');
+    expect(formatOccurrenceTime(twoDays)).toBe('Mar 3, 3:00 PM - Mar 4, 4:30 PM');
+  });
+
+  it('gives the times in a 24-hour locale', function () {
+    // Built before the locale changes: the fixture's first use of CalendarDateUtils loads
+    // date-utils, which sets moment's locale from navigator.language.
+    const sameDay = timedOccurrence('x', '2026-03-03T15:00:00', '2026-03-03T16:30:00');
+    moment.locale('de');
+    const day = moment('2026-03-03T15:00:00').format('ddd, MMM D');
+    expect(formatOccurrenceTime(sameDay)).toBe(`${day} \u00B7 15:00 - 16:30`);
+  });
+
+  it('gives an all-day occurrence its day, or its first and last days', function () {
+    moment.locale('en');
+    expect(formatOccurrenceTime(allDayOccurrence('x', '2026-03-03'))).toBe('Tue, Mar 3, 2026');
+    expect(formatOccurrenceTime(allDayOccurrence('x', '2026-03-03', '2026-03-05'))).toBe(
+      'Mar 3 - Mar 5, 2026'
+    );
+  });
+});
+
+describe('formatShortTimeRange', function () {
+  const at = (hour: number, minute: number) => new Date(2026, 8, 22, hour, minute).getTime() / 1000;
+  afterEach(() => moment.locale('en'));
+
+  it('names the meridiem once when both ends share it', function () {
+    moment.locale('en');
+    expect(formatShortTimeRange(at(19, 30), at(20, 30))).toBe('7:30–8:30PM');
+  });
+
+  it('names both when the range crosses noon', function () {
+    moment.locale('en');
+    expect(formatShortTimeRange(at(11, 30), at(12, 0))).toBe('11:30AM–12PM');
+  });
+
+  it('drops the shared meridiem where the locale puts it first', function () {
+    moment.locale('ko');
+    const end = moment.unix(at(20, 30)).format('A h:mm');
+    expect(formatShortTimeRange(at(19, 0), at(20, 30))).toBe(`7–${end}`);
+  });
+
+  it('writes a 24-hour clock in full at both ends', function () {
+    moment.locale('de');
+    expect(formatShortTimeRange(at(19, 0), at(20, 30))).toBe('19:00–20:30');
+  });
+
+  it("leaves a locale's literal text and a meridiem joined to a word alone", function () {
+    moment.locale('lb');
+    expect(formatShortTimeRange(at(9, 0), at(10, 30))).toBe('9:00 Auer–10:30 Auer');
+    moment.locale('ne');
+    expect(formatShortTimeRange(at(9, 0), at(10, 30))).toBe(
+      `${formatShortTime(at(9, 0))}–${formatShortTime(at(10, 30))}`
+    );
+  });
+});
+
+describe('calendar times with Use 24-hour clock on, in a 12-hour locale', function () {
+  const at = (hour: number, minute: number) => new Date(2026, 8, 22, hour, minute).getTime() / 1000;
+  beforeEach(() => {
+    moment.locale('en');
+    use24HourClock(true);
+  });
+
+  it('formatTime keeps the minutes on the hour', function () {
+    expect(formatTime(at(15, 0), true)).toBe('15:00');
+  });
+
+  it('formatShortTime keeps the minutes on the hour', function () {
+    expect(formatShortTime(at(15, 0))).toBe('15:00');
+  });
+
+  it('formatShortTimeRange writes both ends in full', function () {
+    expect(formatShortTimeRange(at(19, 30), at(20, 30))).toBe('19:30–20:30');
+  });
+});
+
+describe('createCalendarEvent and the organizer', function () {
+  const unfold = (ics: string) => ics.replace(/\r\n[ \t]/g, '').split(/\r?\n/);
+  let queued: any[];
+
+  beforeEach(function () {
+    queued = [];
+    spyOn(AccountStore, 'accountForId').andReturn({ emailAddress: 'me@example.com', name: 'Me' });
+    spyOn(Actions, 'queueTask').andCallFake((task) => queued.push(task));
+    spyOn(Actions, 'focusCalendarEvent');
+    spyOn(SyncbackEventTask, 'forCreating').andCallFake((opts) => opts);
+    spyOn(TaskQueue, 'waitForPerformRemote').andReturn(Promise.resolve());
+  });
+
+  const options = (attendees: Array<{ email: string; name?: string }>) => ({
+    summary: 'Kickoff',
+    start: new Date('2026-03-01T14:00:00Z'),
+    end: new Date('2026-03-01T15:00:00Z'),
+    isAllDay: false,
+    calendarId: 'cal',
+    accountId: 'acct',
+    attendees,
+  });
+
+  it('names the account as organizer and accepted attendee when the event has guests', async function () {
+    await createCalendarEvent(options([{ email: 'bo@example.com', name: 'Bo' }]));
+    const lines = unfold(queued[0].event.ics);
+    expect(lines).toContain('ORGANIZER;CN=Me:mailto:me@example.com');
+    expect(lines).toContain('ATTENDEE;CN=Me;PARTSTAT=ACCEPTED:mailto:me@example.com');
+  });
+
+  it('writes the Show As the editor picked', async function () {
+    await createCalendarEvent({ ...options([]), transparency: 'TRANSPARENT' });
+    expect(unfold(queued[0].event.ics)).toContain('TRANSP:TRANSPARENT');
+  });
+
+  it('makes an all-day event Free and a timed one Busy when no Show As is given', async function () {
+    await createCalendarEvent({ ...options([]), isAllDay: true });
+    await createCalendarEvent(options([]));
+    expect(unfold(queued[0].event.ics)).toContain('TRANSP:TRANSPARENT');
+    expect(unfold(queued[1].event.ics)).toContain('TRANSP:OPAQUE');
+  });
+
+  it('leaves a private appointment without an organizer', async function () {
+    await createCalendarEvent(options([]));
+    expect(queued[0].event.ics).not.toContain('ORGANIZER');
   });
 });

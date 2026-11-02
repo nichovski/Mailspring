@@ -1,18 +1,19 @@
 import React, { CSSProperties } from 'react';
 import ReactDOM from 'react-dom';
-import { InjectedComponentSet } from 'mailspring-component-kit';
-import { CalendarDateUtils } from 'mailspring-exports';
+import { InjectedComponentSet, SVGIcons } from 'mailspring-component-kit';
+import { CalendarDateUtils, CalendarUtils } from 'mailspring-exports';
 import {
   EventOccurrence,
   isTimed,
   occurrenceStartUnix,
   occurrenceEndUnix,
 } from './calendar-data-source';
-import { calcEventColors, extractMeetingDomain, formatEventTimeRange } from './calendar-helpers';
-import { RecurringIcon } from './calendar-icons';
+import { calcEventColors, formatEventTimeRange } from './calendar-helpers';
 import { HitZone, ViewDirection } from './calendar-drag-types';
-import { detectHitZone, canMoveEvent, formatDragPreviewTime } from './calendar-drag-utils';
+import { detectHitZone, canAttemptMove, formatDragPreviewTime } from './calendar-drag-utils';
 import { DAY_DUR, columnSpan } from './week-view-helpers';
+
+const EVENT_GAP = 2;
 
 interface CalendarEventProps {
   event: EventOccurrence;
@@ -41,6 +42,7 @@ interface CalendarEventProps {
 
   onClick: (e: React.MouseEvent<any>, event: EventOccurrence) => void;
   onDoubleClick: (event: EventOccurrence) => void;
+  onContextMenu?: (event: EventOccurrence) => void;
   onFocused: (event: EventOccurrence) => void;
 
   /** Called when a drag operation starts on this event */
@@ -64,6 +66,7 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
     isCalendarReadOnly: false,
     onClick: () => {},
     onDoubleClick: () => {},
+    onContextMenu: () => {},
     onFocused: () => {},
   };
 
@@ -72,24 +75,49 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
   };
 
   componentDidMount() {
-    this._scrollFocusedEventIntoView();
+    this._revealOnFocusGained(false);
+    this._takeFocusIfSelected();
   }
 
-  componentDidUpdate() {
-    this._scrollFocusedEventIntoView();
+  componentDidUpdate(prevProps: CalendarEventProps) {
+    this._revealOnFocusGained(prevProps.focused);
+    if (prevProps.selected) {
+      // Redrawn mid-blur, as an unsent change is, focus sits on <body> until the next field takes it.
+      cancelAnimationFrame(this._refocusFrame);
+      this._refocusFrame = requestAnimationFrame(() => this._takeFocusIfSelected());
+    } else {
+      this._takeFocusIfSelected();
+    }
   }
 
-  _scrollFocusedEventIntoView() {
-    const { focused } = this.props;
-    if (!focused) {
+  componentWillUnmount() {
+    cancelAnimationFrame(this._refocusFrame);
+  }
+
+  _refocusFrame = 0;
+
+  // A moved event is re-drawn under a new id, so the focus its old element had falls to <body>;
+  // taking it back keeps the arrow keys moving it.
+  _takeFocusIfSelected() {
+    if (!this.props.selected || document.activeElement !== document.body) {
+      return;
+    }
+    (ReactDOM.findDOMNode(this) as HTMLElement | null)?.focus({ preventScroll: true });
+  }
+
+  // Announce focus only as it arrives: onFocused selects the event and the reveal scrolls to it,
+  // so doing both on every update jumps the grid back to it on any re-render.
+  _revealOnFocusGained(wasFocused: boolean) {
+    const { focused, event, onFocused } = this.props;
+    if (!focused || wasFocused) {
       return;
     }
     const eventNode = ReactDOM.findDOMNode(this);
     if (!eventNode) {
       return;
     }
-    const { event, onFocused } = this.props;
-    (eventNode as any).scrollIntoViewIfNeeded(true);
+    // centerIfNeeded false: scroll the minimum distance to reveal it, not to the middle.
+    (eventNode as any).scrollIntoViewIfNeeded(false);
     onFocused(event);
   }
 
@@ -138,14 +166,17 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
     let styles: CSSProperties & {
       '--event-band-color'?: string;
       '--event-text-color'?: string;
+      '--event-selected-text-color'?: string;
     } = {};
+    // Gaps between events are cut from the box, not drawn as borders, so the corners stay round.
     if (this.props.direction === 'vertical') {
-      styles = this._getDimensions();
+      const d = this._getDimensions();
+      styles = { ...d, height: `calc(${d.height} - ${EVENT_GAP}px)` };
     } else if (this.props.direction === 'horizontal') {
       const d = this._getDimensions();
       styles = {
-        left: d.top,
-        width: d.height,
+        left: `calc(${d.top} + ${EVENT_GAP}px)`,
+        width: `calc(${d.height} - ${2 * EVENT_GAP}px)`,
         height: d.width,
         top: d.left,
       };
@@ -154,6 +185,7 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
     // Set CSS custom property for the left band color
     styles['--event-band-color'] = colors.band;
     styles['--event-text-color'] = colors.text;
+    styles['--event-selected-text-color'] = colors.selectedText;
 
     if (this.props.event.isCancelled) {
       // Cancelled events get a transparent background with colored border
@@ -173,12 +205,8 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
    * Check if this event can be dragged
    */
   _canDrag(): boolean {
-    // Drag preview events are not interactive
-    if (this.props.event.isDragPreview) {
-      return false;
-    }
     return (
-      canMoveEvent(this.props.event, this.props.isCalendarReadOnly) && !!this.props.onDragStart
+      canAttemptMove(this.props.event, this.props.isCalendarReadOnly) && !!this.props.onDragStart
     );
   }
 
@@ -227,8 +255,10 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
       return;
     }
 
-    // Prevent text selection during drag
+    // Prevent text selection during drag. That also stops the browser focusing the event, so take
+    // focus here; preventScroll keeps a half-hidden event under the pointer for the drag.
     e.preventDefault();
+    e.currentTarget.focus({ preventScroll: true });
 
     // No time is passed: the container's hit-test supplies it as this mousedown bubbles.
     if (this.props.onDragStart) {
@@ -275,7 +305,7 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
       return null;
     }
 
-    const meetingDomain = extractMeetingDomain(event.location, event.description);
+    const meetingDomain = CalendarUtils.extractMeetingDomain(event.location, event.description);
     const timeRange = formatEventTimeRange(
       occurrenceStartUnix(event),
       occurrenceEndUnix(event),
@@ -291,55 +321,19 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
       <div className="event-details">
         {meetingDomain && (
           <span className="event-meeting-link">
-            <svg className="detail-icon" viewBox="0 0 12 12" width="10" height="10">
-              <rect
-                x="1"
-                y="3"
-                width="7"
-                height="6"
-                rx="1"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.3"
-              />
-              <path
-                d="M8 4.5 L11 3 V9 L8 7.5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.3"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <SVGIcons.Video className="detail-icon" size={10} strokeWidth={2.6} />
             {meetingDomain}
           </span>
         )}
         {hasPhysicalLocation && (
           <span className="event-location">
-            <svg className="detail-icon" viewBox="0 0 12 12" width="10" height="10">
-              <path
-                d="M6 11 C6 11 2.5 7 2.5 5 A3.5 3.5 0 1 1 9.5 5 C9.5 7 6 11 6 11Z"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.2"
-              />
-              <circle cx="6" cy="5" r="1.3" fill="currentColor" />
-            </svg>
+            <SVGIcons.Location className="detail-icon" size={10} strokeWidth={2.4} />
             {event.location}
           </span>
         )}
         {timeRange && (
           <span className="event-time-range">
-            <svg className="detail-icon" viewBox="0 0 12 12" width="10" height="10">
-              <circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
-              <polyline
-                points="6,3 6,6 8.5,7.5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <SVGIcons.Clock className="detail-icon" size={10} strokeWidth={2.6} />
             {timeRange}
           </span>
         )}
@@ -348,7 +342,8 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
   }
 
   render() {
-    const { direction, event, onClick, onDoubleClick, selected, isDragging } = this.props;
+    const { direction, event, onClick, onDoubleClick, onContextMenu, selected, isDragging } =
+      this.props;
 
     const classNames = [
       'calendar-event',
@@ -356,7 +351,6 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
       selected && 'selected',
       event.isCancelled && 'cancelled',
       event.isPending && 'pending',
-      event.isException && 'exception',
       isDragging && 'dragging',
       this._canDrag() && 'draggable',
       event.isDragPreview && 'drag-preview',
@@ -395,6 +389,11 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
           e.stopPropagation();
           onDoubleClick(event);
         }}
+        onContextMenu={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          onContextMenu(event);
+        }}
         onMouseMove={this._onMouseMove}
         onMouseLeave={this._onMouseLeave}
         onMouseDown={this._onMouseDown}
@@ -403,8 +402,6 @@ export class CalendarEvent extends React.Component<CalendarEventProps, CalendarE
           {event.isCancelled ? <s>{event.title}</s> : event.title}
         </span>
         {this._renderEventDetails()}
-        {event.isRecurring && !event.isCancelled && !event.isException && <RecurringIcon />}
-        {event.isException && <span className="exception-tag">Modified</span>}
         <InjectedComponentSet
           className="event-injected-components"
           style={{ position: 'absolute' }}

@@ -102,6 +102,22 @@ class KeyManager {
     }
   }
 
+  async deletePasswordsWithPrefix(prefix: string) {
+    // An empty prefix matches every key, including every account's passwords.
+    if (typeof prefix !== 'string' || !prefix) {
+      throw new Error('deletePasswordsWithPrefix requires a non-empty prefix.');
+    }
+    try {
+      const keys = await this._getKeyHash();
+      const doomed = Object.keys(keys).filter((k) => k.startsWith(prefix));
+      if (!doomed.length) return;
+      doomed.forEach((k) => delete keys[k]);
+      await this._writeKeyHash(keys);
+    } catch (err) {
+      this._reportFatalError(err);
+    }
+  }
+
   async getPassword(keyName: string) {
     try {
       const keys = await this._getKeyHash();
@@ -209,13 +225,13 @@ class KeyManager {
         err.message ||
         localized(
           `Mailspring could not store your password securely. For more information, visit %@`,
-          'https://community.getmailspring.com/t/password-management-error/199'
+          'https://getmailspring.com/docs/password-management-error'
         ),
     });
 
     if (clickedButton == 0) {
       const shell = require('electron').shell;
-      shell.openExternal('https://community.getmailspring.com/t/password-management-error/199');
+      shell.openExternal('https://getmailspring.com/docs/password-management-error');
     }
 
     // tell the app to exit and rethrow the error to ensure code relying

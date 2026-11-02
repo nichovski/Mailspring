@@ -4,7 +4,9 @@ import fs from 'fs';
 import url from 'url';
 import { EventEmitter } from 'events';
 import { isWaylandSession } from './is-wayland';
+import { developerToolsAvailable } from '../developer-tools';
 import { XDG_DATA_PATHS, getFirstExistingPath } from '../utils/xdg-paths';
+import { prepareViewWebview, guardViewGuest } from './view-sessions';
 
 import {
   attemptEarlyRendererCrashRecovery,
@@ -13,6 +15,17 @@ import {
 
 let WindowIconPath = null;
 let idNum = 0;
+
+const mailspringWebContents = new WeakSet<Electron.WebContents>();
+
+/**
+ * True for the renderers of Mailspring's own windows. Other top-level windows (print
+ * preview, quick preview, "show original") display untrusted content and must not be
+ * able to drive the main process.
+ */
+export function isMailspringWindowContents(contents: Electron.WebContents) {
+  return mailspringWebContents.has(contents);
+}
 
 export interface MailspringWindowSettings {
   frame?: boolean;
@@ -114,6 +127,11 @@ export default class MailspringWindow extends EventEmitter {
         nodeIntegration: true,
         contextIsolation: false,
         webviewTag: true,
+        // Withholding the capability, rather than only the ways to ask for it, is what makes
+        // the console unreachable in a packaged build: these windows hand the renderer a
+        // @electron/remote handle to their own webContents, so any code running in them could
+        // otherwise call openDevTools() directly. Electron turns such calls into silent no-ops.
+        devTools: developerToolsAvailable(),
         // Note: @electron/remote is enabled via remote.initialize() in main process
       },
       autoHideMenuBar,
@@ -144,6 +162,35 @@ export default class MailspringWindow extends EventEmitter {
     }
 
     this.browserWindow = new BrowserWindow(browserWindowOptions);
+    mailspringWebContents.add(this.browserWindow.webContents);
+
+    // Constrain every <webview> guest to low-privilege preferences regardless of
+    // the attributes on the tag, and strip any preload it requests. The only
+    // legitimate guest (the onboarding sign-in view in
+    // app/src/components/webview.tsx) displays remote web content and needs none
+    // of these privileges. Do not relax this. See GHSA-x8wg-258g-v28h.
+    //
+    // Sandboxed View guests get their bridge preload from their session (registered by
+    // view-sessions.ts), never from the tag, so stripping preloads here applies to them too.
+    this.browserWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+      delete (webPreferences as any).preload;
+      delete (params as any).preload;
+      delete (params as any).webpreferences;
+      delete (params as any).nodeintegration;
+      delete (params as any).nodeintegrationinsubframes;
+      webPreferences.nodeIntegration = false;
+      webPreferences.nodeIntegrationInSubFrames = false;
+      webPreferences.contextIsolation = true;
+      webPreferences.sandbox = true;
+      webPreferences.devTools = developerToolsAvailable();
+      if (!prepareViewWebview(webPreferences, params as any)) {
+        event.preventDefault();
+      }
+    });
+    this.browserWindow.webContents.on('did-attach-webview', (_event, guest) => {
+      guardViewGuest(guest);
+    });
+
     require('@electron/remote/main').enable(this.browserWindow.webContents);
     (this.browserWindow as any).updateLoadSettings = this.updateLoadSettings;
 
@@ -384,7 +431,9 @@ export default class MailspringWindow extends EventEmitter {
         return;
       }
 
-      if (this.neverClose) {
+      // A renderer that died before its first load would die the same way on an
+      // automatic reload, so the main window falls back to the dialog until it has loaded.
+      if (this.neverClose && this.loaded) {
         this.browserWindow.reload();
       } else {
         const chosen = dialog.showMessageBoxSync({
@@ -528,6 +577,7 @@ export default class MailspringWindow extends EventEmitter {
   }
 
   toggleDevTools() {
+    if (!developerToolsAvailable()) return;
     this.browserWindow.webContents.toggleDevTools();
   }
 }

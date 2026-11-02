@@ -46,6 +46,13 @@ function isSurrogateCodeUnitBeforeCursor(document: any, point: any) {
   return isSurrogateCodeUnit(node.text.charCodeAt(offset - 1));
 }
 
+// Drops the trailing `\r` left by splitting CRLF text on `\n`, and treats any other
+// CR (CR-only line endings from classic Mac and some Office exports) as a line break,
+// matching normalizePlainTextForPaste.
+export function normalizeCarriageReturns(text: string) {
+  return text.replace(/\r$/, '').replace(/\r\n?/g, '\n');
+}
+
 function isBlockTypeOrWithinType(value: Value, type: string) {
   if (!value.focusBlock) {
     return false;
@@ -98,15 +105,19 @@ export const BLOCK_CONFIG: {
         }
       }
 
+      const sourceClassName = node.data['className'] || node.data.get('className');
+      const className = [
+        sourceClassName,
+        !targetIsHTML && nodeIsEmpty(node) && 'empty-composer-block',
+      ]
+        .filter(Boolean)
+        .join(' ');
+
       if (targetIsHTML && nodeIsEmpty(node)) {
         return <br {...attributes} />;
       }
       return (
-        <div
-          {...attributes}
-          {...explicitHTMLAttributes}
-          className={node.data['className'] || node.data.get('className')}
-        >
+        <div {...attributes} {...explicitHTMLAttributes} className={className || undefined}>
           {children}
         </div>
       );
@@ -253,11 +264,32 @@ export const BLOCK_CONFIG: {
   },
 };
 
-export const EditListPlugin = new EditList({
+const EditListPluginBase = new EditList({
   types: [BLOCK_CONFIG.ol_list.type, BLOCK_CONFIG.ul_list.type],
   typeItem: BLOCK_CONFIG.list_item.type,
   typeDefault: BLOCK_CONFIG.div.type,
 });
+
+// `getCurrentItem` matches any `list_item`, even one with no surrounding `ol_list`/`ul_list` —
+// a shape email HTML often produces. Letting the base plugin handle Enter/Backspace there calls
+// `unwrapList`, which lifts the orphan's one-element path to the empty root path; Slate then
+// reads `.type` off the null that resolves to and throws (MAILSPRING-CLIENT-EV). Fall through
+// to default handling instead so the orphan behaves like any other block.
+export const EditListPlugin = {
+  ...EditListPluginBase,
+  onKeyDown: (event: React.KeyboardEvent, editor: Editor, next: () => void) => {
+    // Match the base plugin's own key gate so the guard below doesn't run on every keystroke.
+    if (event.key !== 'Enter' && event.key !== 'Tab' && event.key !== 'Backspace') {
+      return EditListPluginBase.onKeyDown(event, editor, next);
+    }
+    const { utils } = EditListPluginBase;
+    const { value } = editor;
+    if (value.startBlock && utils.getCurrentItem(value) && !utils.getCurrentList(value)) {
+      return next();
+    }
+    return EditListPluginBase.onKeyDown(event, editor, next);
+  },
+};
 
 function renderNode(props, editor: Editor = null, next = () => {}) {
   const config = BLOCK_CONFIG[props.node.type];
@@ -435,6 +467,21 @@ const plugins: ComposerEditorPlugin[] = [
   // Base implementation of BLOCK_CONFIG block types,
   // the "block" toolbar section, and serialization
   MailspringBaseBlockPlugin,
+
+  // Slate's drop handler splits dropped text on `\n` alone and inserts each line with
+  // insertText, so CRLF text dragged in from Windows apps leaves a `\r` on every line.
+  // A blank line becomes a block containing only `\r`, which renders with no height in
+  // the composer but is sent as `&nbsp;`. Plain-text paste is normalized separately in
+  // ComposerEditor.onPaste.
+  {
+    onCommand: function onCommand(command, editor: Editor, next: () => void) {
+      const text = command.type === 'insertText' && command.args[0];
+      if (typeof text !== 'string' || !text.includes('\r')) {
+        return next();
+      }
+      editor.command('insertText', normalizeCarriageReturns(text), ...command.args.slice(1));
+    },
+  },
 
   // Return creates soft newlines in code blocks
   When({

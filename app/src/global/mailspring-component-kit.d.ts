@@ -12,6 +12,7 @@ export const OpenIdentityPageButton: typeof import('../components/open-identity-
 export * from '../components/flexbox';
 
 export * from '../components/retina-img';
+export { NavRailItem, NavRailSection } from '../components/nav-rail';
 export const SwipeContainer: typeof import('../components/swipe-container').default;
 export const FluxContainer: typeof import('../components/flux-container').default;
 export const FocusContainer: typeof import('../components/focus-container').default;
@@ -42,8 +43,11 @@ export const OutlineViewItem: typeof import('../components/outline-view-item').d
 export * from '../components/outline-view';
 export const DateInput: typeof import('../components/date-input').default;
 export * from '../components/mini-month-view';
+export * from '../components/snap-scroller';
+export * as SVGIcons from '../components/svg-icons';
 export * from '../components/date-picker';
 export const TimePicker: typeof import('../components/time-picker').default;
+export const ProposeTimePopover: typeof import('../components/propose-time-popover').ProposeTimePopover;
 export const Table: typeof import('../components/table/table').default;
 export const TableRow: typeof import('../components/table/table').TableRow;
 export const TableCell: typeof import('../components/table/table').TableCell;
@@ -56,6 +60,7 @@ export * from '../components/lazy-rendered-list';
 export * from '../components/attachment-items';
 export const CodeSnippet: typeof import('../components/code-snippet').default;
 export const CopyButton: typeof import('../components/copy-button').default;
+export const NewItemButton: typeof import('../components/new-item-button').default;
 
 export * from '../components/composer-editor/composer-editor';
 export * from '../components/composer-editor/composer-editor-plaintext';
