@@ -206,12 +206,15 @@ export default class MailsyncBridge {
 
   ensureClients = _.throttle(async () => {
     const clientsWithoutAccounts = { ...this._clients };
-    const keys = await KeyManager._getKeyHash();
+    // Not awaited here: every client is registered before the keychain read, so a task queued
+    // meanwhile waits in its client instead of finding no client for its account.
+    const keys = KeyManager._getKeyHash();
+    const launches = [];
 
     for (const acct of AccountStore.accounts()) {
       if (!this._clients[acct.id]) {
         // client for this account is missing, launch it!
-        this._launchClient(acct, keys);
+        launches.push(this._launchClient(acct, keys));
       } else {
         // client for this account exists
         delete clientsWithoutAccounts[acct.id];
@@ -224,6 +227,7 @@ export default class MailsyncBridge {
     for (const client of Object.values(clientsWithoutAccounts)) {
       client.kill();
     }
+    await Promise.all(launches);
   }, 100);
 
   // `account` arrives from the onboarding window, which may save it before this window's
@@ -375,13 +379,13 @@ export default class MailsyncBridge {
 
   async _launchClient(
     account: Account,
-    keys: { [key: string]: string },
+    keys: { [key: string]: string } | Promise<{ [key: string]: string }>,
     { force }: { force?: boolean } = {}
   ) {
     const client = new MailsyncProcess(this._getClientConfiguration());
     this._clients[account.id] = client; // set this synchornously so we never spawn two
 
-    const fullAccountJSON = (await KeyManager.insertAccountSecrets(account, keys)).toJSON();
+    const fullAccountJSON = (await KeyManager.insertAccountSecrets(account, await keys)).toJSON();
 
     if (force) {
       this._crashTracker.forgetCrashes(fullAccountJSON);

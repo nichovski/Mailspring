@@ -1,4 +1,7 @@
 import { EventEmitter } from 'events';
+import { Writable } from 'stream';
+// The module object itself, so the spy below replaces the spawn that mailsync-process calls.
+const childProcess = require('child_process');
 import { lastJSONResponse, lastLoggedException, MailsyncProcess } from '../src/mailsync-process';
 
 describe('lastJSONResponse', function () {
@@ -138,5 +141,51 @@ describe('interpreting a mailsync exit', function () {
     const err = await errorFromTest('terminate called\n{"offline":true,"retryable":true', 134);
     expect(err.message).toContain('mailsync: 134');
     expect(err.isNetworkError).toBe(undefined);
+  });
+});
+
+describe('messages sent before mailsync has its account', function () {
+  it('are written after the account and identity, in order', async function () {
+    const writes: string[] = [];
+    const child: any = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new Writable({
+      write(chunk, encoding, callback) {
+        writes.push(chunk.toString());
+        callback();
+      },
+    });
+    spyOn(childProcess, 'spawn').andReturn(child);
+    const proc = new MailsyncProcess({
+      configDirPath: '/tmp',
+      resourcePath: '/tmp',
+      verbose: false,
+    });
+    proc.account = { id: 'acct', emailAddress: 'ben@contoso.com' } as any;
+    proc.identity = { id: 'identity' } as any;
+
+    proc.sendMessage({ type: 'queue-task', task: { id: 'before-spawn' } });
+    proc.sync();
+    proc.sendMessage({ type: 'queue-task', task: { id: 'before-prompt' } });
+    expect(writes).toEqual([]);
+
+    child.stdout.emit('data', Buffer.from('\nWaiting for Account JSON:\n'));
+    // The account and identity are piped from a stream, which flows on process.nextTick.
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => process.nextTick(resolve));
+    proc.sendMessage({ type: 'queue-task', task: { id: 'after-prompt' } });
+
+    const lines = writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(lines.map((line) => (line.task ? line.task.id : line.id))).toEqual([
+      'acct',
+      'identity',
+      'before-spawn',
+      'before-prompt',
+      'after-prompt',
+    ]);
   });
 });
