@@ -40,6 +40,16 @@ Read changes use `ChangeUnreadTask` through the existing sync engine. Tasks cont
 
 `message-participants.tsx` provides the sender context menu. `preferences-general.tsx` lists saved mutes and provides removal controls. The config schema and `mailspring-exports` expose the new store to these packages.
 
+### Startup catch-up and the sync bridge
+
+The store is created on first use, about a second after the window loads, and immediately queues read tasks for cached unread mail from muted senders. At that point the account's sync process is usually still starting, and upstream Mailspring lost tasks sent then in three ways:
+
+1. `MailsyncBridge.ensureClients` read the keychain before registering any client, so `sendMessageToAccount` found no client, showed a blocking "Mailspring is unable to sync" dialog and dropped the task.
+2. `_launchClient` registers the client before spawning its process, and `MailsyncProcess.sendMessage` threw on the missing process inside a `try` that swallowed the error.
+3. Mailsync reads the account and identity JSON as its first two stdin lines, written only after it prints "Waiting for Account JSON". A task written before that would be read as the account JSON.
+
+`ensureClients` now registers every client before awaiting the keychain (`_launchClient` accepts the key promise), and `MailsyncProcess` holds messages in `_unsentMessages` until the account and identity have been piped (`_acceptsMessages`). This applies to every task queued at startup, not only mutes. Covered by `app/spec/mailsync-process-spec.ts` and `app/spec/mailsync-bridge-spec.ts`.
+
 ## Limits
 
 - This is a local Mailspring preference, not a provider-side mail rule. Automatic processing requires Mailspring to be running and the account to sync; it does not configure notifications in other email clients.
@@ -66,6 +76,12 @@ npm run build -- --skip-installers
 ```
 
 The packaged files were checked for the account-scoped mute controls, installed into the existing Linux application directory, and verified against the build. The updated app launched successfully. Live sender-menu interaction and provider-side read synchronization were not verified in this session.
+
+## All-accounts validation (November 2, 2026)
+
+On 1.26.2 with 22 accounts and 122 per-account entries (42 senders): the 25 unread messages from senders muted only in another account were marked read; a sender muted from the menu was saved as `{ "email": ... }` and the list rewritten to 43 email-only entries; new mail from muted senders was marked read as it arrived; and on a cold start an unread muted message was marked read within 3 seconds. Afterwards no unread mail from a muted sender remained in any account. `npm test` passed (3450 specs).
+
+Upgrading this profile to 1.26.2 first failed the V10 migration on `UNIQUE constraint failed: MessageFolder.accountId, MessageFolder.folderId, MessageFolder.remoteUID`: two cached messages in one Archive folder shared UID 388520. Setting the stale row's `remoteUID` to an unlink sentinel (4294967294) let the migration orphan it.
 
 ## Sidebar unread fix validation
 
