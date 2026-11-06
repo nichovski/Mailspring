@@ -76,7 +76,8 @@ describe('ai-triage logic', function () {
       t5: { s: 0.2, a: 0.9 },
     };
 
-    it('priority sorts by attention, then date, and puts unscored threads last', function () {
+    // The subscription loads threads newest first, so equal attention keeps that order.
+    it('priority sorts by attention, keeps input order on ties, and puts unscored threads last', function () {
       const ids = orderThreads(threads, lookup(entries), 0.9, 'priority').map((t) => t.id);
       expect(ids).toEqual(['t2', 't5', 't1', 't4']);
     });

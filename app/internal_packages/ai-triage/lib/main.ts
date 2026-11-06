@@ -1,6 +1,8 @@
 import {
   localized,
+  Actions,
   ComponentRegistry,
+  FocusedPerspectiveStore,
   ExtensionRegistry,
   PreferencesUIStore,
   WorkspaceStore,
@@ -44,6 +46,10 @@ function setOn(next: boolean) {
     ExtensionRegistry.AccountSidebar.unregister(PriorityExtension);
     ExtensionRegistry.AccountSidebar.unregister(ProbableSpamExtension);
     TriageScorer.stop();
+    const current = FocusedPerspectiveStore.current();
+    if (current && 'isAiTriage' in current) {
+      Actions.focusDefaultMailboxPerspectiveForAccounts(current.accountIds);
+    }
   }
 }
 
@@ -69,7 +75,7 @@ export function deactivate() {
   ComponentRegistry.unregister(TriageBadge);
   ComponentRegistry.unregister(TriageWarningBar);
   ComponentRegistry.unregister(TriageBar);
-  PreferencesUIStore.unregisterPreferencesTab(preferencesTab.sectionId);
+  PreferencesUIStore.unregisterPreferencesTab(preferencesTab);
   preferencesTab = null;
 }
 

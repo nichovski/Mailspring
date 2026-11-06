@@ -121,7 +121,11 @@ class TriageScorer {
   async _score(threadId: string) {
     try {
       const text = await this._textFor(threadId);
-      if (text === null || !TriageStore.enabled()) {
+      if (!TriageStore.enabled()) {
+        return;
+      }
+      if (text === null) {
+        TriageStore.setFailed(threadId);
         return;
       }
       const json = await MailspringAPIRequest.makeRequest({

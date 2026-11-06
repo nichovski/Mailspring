@@ -27,6 +27,14 @@ describe('TriageScorer', function () {
     request = spyOn(MailspringAPIRequest, 'makeRequest');
   });
 
+  it('marks a thread failed when it has only drafts', async function () {
+    (TriageScorer._textFor as jasmine.Spy).andReturn(Promise.resolve(null));
+    TriageScorer.enqueue(['t1']);
+    await settle();
+    expect(request).not.toHaveBeenCalled();
+    expect(TriageStore.setFailed).toHaveBeenCalledWith('t1');
+  });
+
   it('makes no request while the feature is off', async function () {
     enabled = false;
     request.andReturn(Promise.resolve({ spam: 0.1, attention: 0.5 }));
@@ -60,9 +68,10 @@ describe('TriageScorer', function () {
 
   it('stops scoring when the backend answers 503', async function () {
     request.andReturn(Promise.reject(Object.assign(new Error('no key'), { statusCode: 503 })));
-    TriageScorer.enqueue(['t1', 't2']);
+    TriageScorer.enqueue(['t1', 't2', 't3', 't4', 't5']);
     await settle();
     expect(TriageScorer._halted).toBe(true);
-    expect(request.callCount).toBeLessThan(3);
+    // Only the first batch (concurrency 3) went out; nothing starts after the halt.
+    expect(request.callCount).toBeLessThan(4);
   });
 });
