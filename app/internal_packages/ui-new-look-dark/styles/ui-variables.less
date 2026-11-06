@@ -1,0 +1,36 @@
+@import 'base/ui-variables';
+
+@nl-bg: #0d0f13;
+@nl-panel: #14171c;
+@nl-alt: #191d23;
+@nl-line: #262b33;
+@nl-text: #e7e9ed;
+@nl-muted: #aeb4bf;
+@nl-faint: #8d94a1;
+@nl-accent: #7ea3ff;
+@nl-accent-fg: #0d0f13;
+@nl-soft: #1c2640;
+@nl-soft-fg: #afc6ff;
+@nl-sel: #1a2235;
+@nl-shadow: ~'0 1px 2px rgba(0, 0, 0, 0.35)';
+@nl-ai: #b7a4ff;
+@nl-ai-fg: #cdbfff;
+@nl-warn-soft: #2e1916;
+@nl-warn-fg: #f5b4a8;
+@nl-warn-line: #57291f;
+
+// Filters for list icons and labels on the selected row; the dark theme inverts them.
+@nl-icon-filter: invert(100%);
+@nl-label-filter: contrast(110%) brightness(85%);
+
+@import '../../ui-new-look/styles/shared/variables';
+
+// Static styles use these colour names directly; flip them as ui-dark does.
+@gray-base: #ffffff;
+@gray-darker: darken(@gray-base, 13.5%);
+@gray-dark: darken(@gray-base, 20%);
+@gray: darken(@gray-base, 33.5%);
+@gray-light: darken(@gray-base, 46.7%);
+@gray-lighter: darken(@gray-base, 92.5%);
+@white: @nl-panel;
+@black: @nl-text;

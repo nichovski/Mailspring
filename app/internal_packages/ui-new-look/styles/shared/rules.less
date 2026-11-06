@@ -1,0 +1,436 @@
+@import 'fonts';
+
+.nl-geist-faces();
+.nl-newsreader-faces();
+
+// The scope adds one class and one element of specificity, so these rules outrank the
+// platform rules in workspace.less (body.platform-linux ...) without !important.
+:is(body.theme-ui-new-look, body.theme-ui-new-look-dark) {
+  mailspring-workspace {
+    --thread-list-item-height-narrow: 120px;
+  }
+
+  &.platform-win32 {
+    --font-weight-semi-bold: 600;
+    font-family: @font-family;
+
+    mailspring-workspace {
+      font-family: @font-family;
+    }
+  }
+
+  // ----- Toolbar -----
+
+  .sheet-toolbar-container {
+    background: @nl-panel;
+    background-image: none;
+  }
+  header.sheet-toolbar {
+    border-bottom: 1px solid @nl-line;
+  }
+  .toolbar-RootSidebar,
+  .nav-rail-frame {
+    background: @nl-bg;
+  }
+  .toolbar-RootSidebar {
+    height: 100%;
+  }
+  .toolbar-RootSidebar .item-compose {
+    display: none;
+  }
+
+  .sheet-toolbar {
+    .btn.btn-toolbar {
+      background: transparent;
+      box-shadow: none;
+      border: 0;
+      border-radius: 8px;
+      min-width: 32px;
+
+      &:hover {
+        background: @nl-alt;
+      }
+      &:active {
+        background: @nl-line;
+      }
+      img.content-mask {
+        background-color: @nl-muted;
+      }
+    }
+    .button-group {
+      box-shadow: none;
+      border-radius: 8px;
+
+      .btn.btn-toolbar {
+        border-left: 0;
+        border-right: 0;
+      }
+    }
+    .thread-search-bar {
+      background: @nl-alt;
+      border: 1px solid @nl-line;
+      border-radius: 10px;
+      box-shadow: none;
+    }
+  }
+
+  // macOS already has the 46px toolbar geometry; the other platforms get it here.
+  &:not(.platform-darwin) .sheet-toolbar {
+    height: 46px;
+    min-height: 46px;
+    max-height: 46px;
+
+    .btn-toolbar,
+    .btn-ghost,
+    .btn-bare {
+      margin-top: 8px;
+      height: 30px;
+      line-height: 30px;
+    }
+    .item-container .window-title {
+      line-height: 46px;
+    }
+    .selection-bar {
+      height: 46px;
+
+      .absolute {
+        height: 45px;
+
+        .inner .centered {
+          line-height: 46px;
+        }
+      }
+    }
+    .thread-search-bar {
+      height: 30px;
+      line-height: 30px;
+      margin-top: 8px;
+    }
+  }
+
+  // ----- Sidebar -----
+
+  .account-sidebar-sections {
+    padding: 0 12px 16px;
+  }
+
+  .account-sidebar .outline-view {
+    .item {
+      height: 40px;
+      padding: 0 10px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      color: @nl-muted;
+
+      img.content-mask {
+        background-color: @nl-muted;
+      }
+      .icon {
+        padding-right: 12px;
+      }
+      .item-count-box,
+      .item-count-box.alt-count {
+        box-shadow: none;
+        background: transparent;
+        color: @nl-faint;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      &:hover {
+        background: fade(@nl-text, 4%);
+      }
+
+      &.selected {
+        background: @nl-soft;
+        color: @nl-soft-fg;
+        font-weight: 600;
+
+        img.content-mask {
+          background-color: @nl-soft-fg;
+        }
+        .item-count-box,
+        .item-count-box.alt-count {
+          color: @nl-soft-fg;
+        }
+      }
+    }
+    .heading {
+      font-size: 12px;
+      font-weight: 600;
+      color: @nl-faint;
+      letter-spacing: 0.02em;
+      padding: 18px 10px 6px;
+    }
+  }
+
+  .new-look-sidebar-header {
+    order: -1;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 16px 12px 0;
+    background: @nl-bg;
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 4px 8px 14px;
+    }
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: @nl-accent;
+      color: @nl-accent-fg;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .brand-name {
+      font-weight: 600;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+      color: @nl-text;
+    }
+    .compose {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 44px;
+      margin: 0 0 14px;
+      border: 0;
+      border-radius: 10px;
+      background: @nl-accent;
+      color: @nl-accent-fg;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+
+      kbd {
+        font-family: inherit;
+        font-size: 11px;
+        font-weight: 500;
+        padding: 1px 6px;
+        border-radius: 5px;
+        border: 1px solid currentColor;
+        opacity: 0.8;
+      }
+    }
+  }
+
+  // ----- Thread list: all modes -----
+
+  .thread-list .list-item:not(.selected):not(.focused) {
+    background-color: @nl-panel;
+
+    &:hover {
+      background-color: @nl-alt;
+    }
+  }
+  .list-tabular .list-tabular-item.keyboard-cursor {
+    border-left-color: @nl-accent;
+  }
+
+  // The selected row keeps the list colours instead of inverting them.
+  .thread-list .focused,
+  .thread-list.handler-split .list-item.selected {
+    color: @nl-text;
+
+    .thread-icon,
+    .draft-icon,
+    .mail-important-icon {
+      filter: none;
+    }
+    .thread-icon:not(.thread-icon-unread):not(.thread-icon-star) {
+      filter: @nl-icon-filter;
+    }
+    .mail-label {
+      filter: @nl-label-filter;
+    }
+  }
+
+  .thread-list {
+    .timestamp {
+      opacity: 1;
+      color: @nl-faint;
+      font-size: 12px;
+    }
+    .unread:not(.focused) .timestamp {
+      color: @nl-accent;
+      font-weight: 600;
+    }
+    .mail-label {
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 500;
+      line-height: 1.45;
+      padding: 1px 8px;
+      margin-right: 0;
+    }
+    .ai-triage-chip {
+      margin-right: 0;
+    }
+    .thread-injected-mail-labels {
+      gap: 6px;
+    }
+  }
+
+  // ----- Thread list: narrow -----
+
+  .thread-list-narrow {
+    .list-tabular-item {
+      align-items: flex-start;
+      line-height: 20px;
+    }
+    .list-column-Item {
+      padding: 14px 52px 14px 12px;
+    }
+    .thread-injected-avatar {
+      margin-right: 12px;
+
+      &:empty {
+        display: none;
+      }
+    }
+    .new-look-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 600;
+      flex: none;
+    }
+    .icons-column {
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
+      width: auto;
+      margin: 0;
+      flex-direction: row-reverse;
+      gap: 2px;
+    }
+    .mail-important-icon {
+      float: none;
+    }
+    .icons-column .thread-icon-unread:not(:hover) {
+      background-image: none;
+    }
+    .thread-info-column {
+      align-self: flex-start;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .participants-wrapper {
+      gap: 6px;
+      min-height: 20px;
+    }
+    .list-item.unread:not(.focused) .participants-wrapper::before {
+      content: '';
+      flex: none;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: @nl-accent;
+    }
+    .participants {
+      font-size: 14px;
+      font-weight: 500;
+      color: @nl-text;
+    }
+    .ai-triage-meter {
+      margin: 0;
+    }
+    .subject {
+      font-size: 14px;
+      color: @nl-text;
+    }
+    .snippet-and-labels {
+      flex-direction: column;
+      align-items: flex-start;
+      margin-right: 0;
+
+      .snippet {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        white-space: normal;
+        overflow: hidden;
+        font-size: 13.5px;
+        line-height: 1.42;
+        color: @nl-faint;
+        opacity: 1;
+        min-height: 0;
+        margin: 0;
+      }
+      &:has(.thread-injected-mail-labels:not(:empty)) .snippet {
+        -webkit-line-clamp: 1;
+      }
+    }
+    .unread:not(.focused):not(.selected) .snippet {
+      color: @nl-faint;
+    }
+    .thread-injected-mail-labels {
+      margin-top: 6px;
+      flex-wrap: wrap;
+
+      &:empty {
+        display: none;
+      }
+    }
+  }
+
+  // ----- Reading pane -----
+
+  #message-list {
+    background: @nl-panel;
+
+    .message-subject-wrap {
+      line-height: 1.2;
+      margin-top: 28px;
+      margin-bottom: 16px;
+    }
+    .message-subject {
+      font-family: @font-family-serif;
+      font-size: 30px;
+      font-weight: 500;
+      line-height: 1.2;
+      letter-spacing: -0.01em;
+      color: @nl-text;
+    }
+    .message-item-wrap .message-item-white-wrap,
+    .message-item-wrap.collapsed .message-item-white-wrap {
+      background: @nl-panel;
+      border: 1px solid @nl-line;
+      border-radius: 14px;
+      box-shadow: @nl-shadow;
+    }
+    .message-header {
+      .participant-primary {
+        font-weight: 600;
+      }
+      .participant-secondary {
+        color: @nl-faint;
+        font-size: 13px;
+      }
+      .message-time {
+        font-size: 12.5px;
+      }
+    }
+    .footer-reply-area-wrap {
+      margin-top: 8px;
+      border: 1px solid @nl-line;
+      border-radius: 14px;
+      box-shadow: none;
+      background: @nl-alt;
+    }
+  }
+}

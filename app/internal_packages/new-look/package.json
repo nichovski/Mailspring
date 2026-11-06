@@ -1,0 +1,14 @@
+{
+  "name": "new-look",
+  "version": "0.1.0",
+  "description": "Layout parts for the New Look themes",
+  "main": "lib/main",
+  "license": "GPL-3.0",
+  "private": true,
+  "windowTypes": {
+    "default": true
+  },
+  "engines": {
+    "mailspring": "*"
+  }
+}

@@ -1,0 +1,16 @@
+@import 'ui-variables';
+@import '../../ui-new-look/styles/shared/rules';
+
+// The PNG icons are dark artwork; invert them on the dark surfaces.
+.thread-icon:not(.thread-icon-unread):not(.thread-icon-star) {
+  filter: invert(100%);
+}
+img.content-dark {
+  filter: invert(100%);
+}
+img.content-light {
+  filter: invert(100%);
+}
+.mail-label {
+  filter: contrast(110%) brightness(85%);
+}

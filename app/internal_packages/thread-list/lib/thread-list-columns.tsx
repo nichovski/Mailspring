@@ -136,14 +136,23 @@ const c3 = new ListTabular.Column({
 const c4 = new ListTabular.Column({
   name: 'Date',
   resolver: (thread: ThreadWithMessagesMetadata) => {
-    return (
+    return [
+      <InjectedComponentSet
+        key="before-timestamp"
+        inline={true}
+        containersRequired={false}
+        matching={{ role: 'ThreadListBeforeTimestamp' }}
+        className="thread-injected-before-timestamp"
+        exposedProps={{ thread: thread }}
+      />,
       <InjectedComponent
+        key="timestamp"
         className="thread-injected-timestamp"
         fallback={ThreadListTimestamp}
         exposedProps={{ thread: thread }}
         matching={{ role: 'ThreadListTimestamp' }}
-      />
-    );
+      />,
+    ];
   },
 });
 
@@ -198,6 +207,13 @@ const cNarrow = new ListTabular.Column({
     // until we revisit the UI to accommodate more icons
     return (
       <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+        <InjectedComponentSet
+          inline={true}
+          containersRequired={false}
+          matching={{ role: 'ThreadListAvatar' }}
+          className="thread-injected-avatar"
+          exposedProps={{ thread: thread }}
+        />
         <div className="icons-column">
           <ThreadListIcon thread={thread} />
           <InjectedComponentSet
@@ -218,6 +234,13 @@ const cNarrow = new ListTabular.Column({
             {pencil}
             <span style={{ flex: 1 }} />
             {attachment}
+            <InjectedComponentSet
+              inline={true}
+              containersRequired={false}
+              matching={{ role: 'ThreadListBeforeTimestamp' }}
+              className="thread-injected-before-timestamp"
+              exposedProps={{ thread: thread }}
+            />
             <InjectedComponent
               key="thread-injected-timestamp"
               className="thread-injected-timestamp"

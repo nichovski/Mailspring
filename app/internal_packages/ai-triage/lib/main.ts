@@ -7,7 +7,7 @@ import {
   PreferencesUIStore,
   WorkspaceStore,
 } from 'mailspring-exports';
-import { TriageBadge } from './triage-badge';
+import { TriageChip, TriageMeter } from './triage-badge';
 import { TriageBar } from './triage-bar';
 import { TriageWarningBar } from './triage-warning-bar';
 import { PriorityExtension, ProbableSpamExtension } from './triage-perspectives';
@@ -54,7 +54,8 @@ function setOn(next: boolean) {
 }
 
 export function activate() {
-  ComponentRegistry.register(TriageBadge, { role: 'Thread:MailLabel' });
+  ComponentRegistry.register(TriageMeter, { role: 'ThreadListBeforeTimestamp' });
+  ComponentRegistry.register(TriageChip, { role: 'Thread:MailLabel' });
   ComponentRegistry.register(TriageWarningBar, { role: 'MessageListHeaders' });
   ComponentRegistry.register(TriageBar, { location: WorkspaceStore.Location.ThreadList });
 
@@ -72,7 +73,8 @@ export function activate() {
 export function deactivate() {
   enabledSubscription?.dispose();
   setOn(false);
-  ComponentRegistry.unregister(TriageBadge);
+  ComponentRegistry.unregister(TriageMeter);
+  ComponentRegistry.unregister(TriageChip);
   ComponentRegistry.unregister(TriageWarningBar);
   ComponentRegistry.unregister(TriageBar);
   PreferencesUIStore.unregisterPreferencesTab(preferencesTab);

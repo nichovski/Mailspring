@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
 import classnames from 'classnames';
+import { Disposable } from 'event-kit';
 
 import {
   MultiselectList,
@@ -50,6 +51,7 @@ class ThreadList extends React.Component<
   };
 
   unsub?: () => void;
+  _themeSubscription?: Disposable;
 
   constructor(props) {
     super(props);
@@ -65,6 +67,8 @@ class ThreadList extends React.Component<
         syncing: FocusedPerspectiveStore.current().hasSyncingCategories(),
       })
     );
+    // Row heights come from theme CSS (--thread-list-item-height-*), so re-read them on theme change.
+    this._themeSubscription = AppEnv.themes.onDidChangeActiveThemes(() => this.forceUpdate());
     window.addEventListener('resize', this._onResize, true);
     ReactDOM.findDOMNode(this).addEventListener('contextmenu', this._onShowContextMenu);
     this._onResize();
@@ -79,6 +83,7 @@ class ThreadList extends React.Component<
 
   componentWillUnmount() {
     this.unsub();
+    this._themeSubscription?.dispose();
     window.removeEventListener('resize', this._onResize, true);
     ReactDOM.findDOMNode(this).removeEventListener('contextmenu', this._onShowContextMenu);
   }

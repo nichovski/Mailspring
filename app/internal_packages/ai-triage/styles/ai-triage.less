@@ -1,17 +1,7 @@
 @import 'ui-variables';
 
-@ai-triage-color: #7c4dff;
-
 .ai-triage-sparkle {
-  color: @ai-triage-color;
   flex-shrink: 0;
-}
-
-.ai-triage-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-right: 6px;
 }
 
 .ai-triage-meter {
@@ -19,100 +9,175 @@
   align-items: flex-end;
   gap: 2px;
   height: 12px;
+  padding: 0 2px;
+  margin: 0 4px;
+  flex: none;
 
   i {
     width: 3px;
     border-radius: 1px;
-    background: mix(@ai-triage-color, @background-primary, 20%);
+    background: @border-color-divider;
 
     &:nth-child(1) { height: 4px; }
-    &:nth-child(2) { height: 7px; }
-    &:nth-child(3) { height: 10px; }
-    &:nth-child(4) { height: 12px; }
-    &.on { background: @ai-triage-color; }
+    &:nth-child(2) { height: 6.6px; }
+    &:nth-child(3) { height: 9.2px; }
+    &:nth-child(4) { height: 11.8px; }
+    &.on { background: @text-color-subtle; }
   }
+  &.high i.on { background: @ai-triage-color; }
 }
 
 .ai-triage-chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 0 6px;
-  border-radius: 8px;
-  font-size: 0.85em;
-  color: @ai-triage-color;
-  background: mix(@ai-triage-color, @background-primary, 15%);
-
-  &.spam {
-    color: @color-error;
-    background: mix(@color-error, @background-primary, 15%);
-  }
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  padding: 1px 8px;
+  border-radius: 999px;
+  margin-right: 6px;
+  background: @ai-triage-warn-bg;
+  color: @ai-triage-warn-color;
+  border: 1px solid @ai-triage-warn-border;
 }
 
-.ai-triage-warning {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  margin-bottom: 5px;
-  border-radius: 4px;
-  color: @text-color;
-  background: mix(@ai-triage-color, @background-primary, 12%);
-  border: 1px solid mix(@ai-triage-color, @border-color-divider, 35%);
-
-  .message {
-    flex: 1;
-  }
-  &.spam {
-    background: mix(@color-error, @background-primary, 12%);
-    border-color: mix(@color-error, @border-color-divider, 35%);
-  }
+// The reading pane shows the warning instead of the chip.
+.message-subject-wrap .ai-triage-chip {
+  display: none;
 }
 
 .ai-triage-bar {
   // The thread list registers first in this column; order puts the bar above it.
   order: -1;
   flex-shrink: 0;
-  font-size: 0.9em;
+  padding: 12px 16px;
   border-bottom: 1px solid @border-color-divider;
-  background: mix(@ai-triage-color, @background-primary, 6%);
+  background: @background-primary;
+}
+
+.ai-triage-card {
+  border-radius: 10px;
+  background: @background-secondary;
+  border: 1px solid @border-color-divider;
 
   .toggle {
     display: flex;
     align-items: center;
     gap: 6px;
     width: 100%;
-    padding: 6px 12px;
+    min-height: 40px;
+    padding: 0 10px 0 12px;
     border: 0;
-    background: none;
-    color: @text-color;
+    border-radius: 10px;
+    background: transparent;
+    color: @ai-triage-text-color;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
     text-align: left;
     cursor: pointer;
-  }
-  .summary {
-    color: @text-color-subtle;
+
+    .title { flex: 1; }
+    .summary {
+      font-weight: 500;
+      color: @text-color-very-subtle;
+    }
+    .chevron {
+      flex: none;
+      color: @text-color-very-subtle;
+      transition: transform 0.15s;
+    }
+    &[aria-expanded='true'] .chevron { transform: rotate(180deg); }
   }
   .body {
-    padding: 0 12px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0 12px 10px;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: @text-color-subtle;
+
+    > span { white-space: nowrap; }
   }
   .note {
-    margin-top: 4px;
-    color: @text-color-subtle;
+    font-size: 12px;
+    color: @text-color-very-subtle;
   }
 }
 
 .ai-triage-slider {
+  flex: 1;
   display: flex;
   align-items: center;
   gap: 8px;
 
   input[type='range'] {
     flex: 1;
+    min-width: 60px;
+    min-height: 28px;
     accent-color: @ai-triage-color;
   }
   .value {
-    min-width: 3em;
+    width: 34px;
     text-align: right;
+    font-weight: 600;
+    color: @text-color;
+  }
+}
+
+.ai-triage-warning {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 12px 12px 16px;
+  margin-bottom: 12px;
+  border: 1px solid @ai-triage-warn-border;
+  border-radius: 14px;
+  background: @ai-triage-warn-bg;
+  color: @ai-triage-warn-color;
+
+  svg { flex: none; }
+  .text {
+    flex: 1;
+    min-width: 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .title {
+    font-weight: 600;
+    font-size: 14.5px;
+  }
+  .detail { font-size: 13px; }
+  .btn {
+    height: auto;
+    min-height: 40px;
+    line-height: normal;
+    padding: 0 14px;
+    border-radius: 9px;
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: none;
+    background-image: none;
+  }
+  .btn.not-spam {
+    border: 1px solid @ai-triage-warn-border;
+    background: @background-primary;
+    color: @text-color;
+  }
+  .btn.action {
+    border: 0;
+    background: transparent;
+    color: @ai-triage-warn-color;
+
+    &:hover { background: fade(@ai-triage-warn-color, 8%); }
   }
 }
 
