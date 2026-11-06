@@ -1,0 +1,130 @@
+@import 'ui-variables';
+
+@ai-triage-color: #7c4dff;
+
+.ai-triage-sparkle {
+  color: @ai-triage-color;
+  flex-shrink: 0;
+}
+
+.ai-triage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 6px;
+}
+
+.ai-triage-meter {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+
+  i {
+    width: 3px;
+    border-radius: 1px;
+    background: mix(@ai-triage-color, @background-primary, 20%);
+
+    &:nth-child(1) { height: 4px; }
+    &:nth-child(2) { height: 7px; }
+    &:nth-child(3) { height: 10px; }
+    &:nth-child(4) { height: 12px; }
+    &.on { background: @ai-triage-color; }
+  }
+}
+
+.ai-triage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 0.85em;
+  color: @ai-triage-color;
+  background: mix(@ai-triage-color, @background-primary, 15%);
+
+  &.spam {
+    color: @color-error;
+    background: mix(@color-error, @background-primary, 15%);
+  }
+}
+
+.ai-triage-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 5px;
+  border-radius: 4px;
+  color: @text-color;
+  background: mix(@ai-triage-color, @background-primary, 12%);
+  border: 1px solid mix(@ai-triage-color, @border-color-divider, 35%);
+
+  .message {
+    flex: 1;
+  }
+  &.spam {
+    background: mix(@color-error, @background-primary, 12%);
+    border-color: mix(@color-error, @border-color-divider, 35%);
+  }
+}
+
+.ai-triage-bar {
+  flex-shrink: 0;
+  font-size: 0.9em;
+  border-bottom: 1px solid @border-color-divider;
+  background: mix(@ai-triage-color, @background-primary, 6%);
+
+  .toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 12px;
+    border: 0;
+    background: none;
+    color: @text-color;
+    text-align: left;
+    cursor: pointer;
+  }
+  .summary {
+    color: @text-color-subtle;
+  }
+  .body {
+    padding: 0 12px 8px;
+  }
+  .note {
+    margin-top: 4px;
+    color: @text-color-subtle;
+  }
+}
+
+.ai-triage-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  input[type='range'] {
+    flex: 1;
+    accent-color: @ai-triage-color;
+  }
+  .value {
+    min-width: 3em;
+    text-align: right;
+  }
+}
+
+.container-ai-triage {
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .note {
+    color: @text-color-subtle;
+  }
+  .threshold-label {
+    display: block;
+    margin-top: 12px;
+  }
+}

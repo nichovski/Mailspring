@@ -1,0 +1,78 @@
+import {
+  localized,
+  ComponentRegistry,
+  ExtensionRegistry,
+  PreferencesUIStore,
+  WorkspaceStore,
+} from 'mailspring-exports';
+import { TriageBadge } from './triage-badge';
+import { TriageBar } from './triage-bar';
+import { TriageWarningBar } from './triage-warning-bar';
+import { PriorityExtension, ProbableSpamExtension } from './triage-perspectives';
+import TriageScorer from './triage-scorer';
+import { Disposable } from 'event-kit';
+
+export const config = {
+  enabled: {
+    type: 'boolean',
+    default: false,
+  },
+  spamThreshold: {
+    type: 'integer',
+    default: 90,
+    minimum: 50,
+    maximum: 99,
+  },
+};
+
+let preferencesTab: any = null;
+let enabledSubscription: Disposable | null = null;
+let on = false;
+
+function setOn(next: boolean) {
+  if (next === on) {
+    return;
+  }
+  on = next;
+  if (next) {
+    ExtensionRegistry.AccountSidebar.register(ProbableSpamExtension);
+    ExtensionRegistry.AccountSidebar.register(PriorityExtension);
+    if (AppEnv.isMainWindow()) {
+      TriageScorer.start();
+    }
+  } else {
+    ExtensionRegistry.AccountSidebar.unregister(PriorityExtension);
+    ExtensionRegistry.AccountSidebar.unregister(ProbableSpamExtension);
+    TriageScorer.stop();
+  }
+}
+
+export function activate() {
+  ComponentRegistry.register(TriageBadge, { role: 'Thread:MailLabel' });
+  ComponentRegistry.register(TriageWarningBar, { role: 'MessageListHeaders' });
+  ComponentRegistry.register(TriageBar, { location: WorkspaceStore.Location.ThreadList });
+
+  preferencesTab = new PreferencesUIStore.TabItem({
+    tabId: 'AiTriage',
+    displayName: localized('Smart Triage'),
+    componentClassFn: () => require('./preferences-triage').default,
+    order: 11,
+  });
+  PreferencesUIStore.registerPreferencesTab(preferencesTab);
+
+  enabledSubscription = AppEnv.config.observe('ai-triage.enabled', (value) => setOn(!!value));
+}
+
+export function deactivate() {
+  enabledSubscription?.dispose();
+  setOn(false);
+  ComponentRegistry.unregister(TriageBadge);
+  ComponentRegistry.unregister(TriageWarningBar);
+  ComponentRegistry.unregister(TriageBar);
+  PreferencesUIStore.unregisterPreferencesTab(preferencesTab.sectionId);
+  preferencesTab = null;
+}
+
+export function serialize() {
+  return {};
+}
