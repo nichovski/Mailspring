@@ -1,0 +1,16 @@
+{
+  "name": "ai-triage",
+  "version": "1.0.0",
+  "title": "Smart Triage",
+  "description": "Spam and attention scores for inbox mail",
+  "main": "lib/main",
+  "isOptional": true,
+  "isIdentityRequired": true,
+  "windowTypes": {
+    "default": true
+  },
+  "engines": {
+    "mailspring": "*"
+  },
+  "license": "GPL-3.0"
+}

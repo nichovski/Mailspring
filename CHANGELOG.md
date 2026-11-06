@@ -4,6 +4,7 @@
 
 Features:
 
+- Added Smart Triage (off by default, Preferences → Smart Triage): new inbox mail gets a spam probability and an attention score, with a Priority view sorted by attention, a Probable spam view, an attention meter and spam chips in the thread list, a spam warning in the message view, and an adjustable spam threshold. Needs the self-hosted backend's `/api/ai/triage`.
 - Added sender muting: right-click a sender to automatically mark their existing and incoming messages as read without notifications in all accounts, and manage muted senders in Preferences → General.
 
 Bug Fixes:
