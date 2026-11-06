@@ -1,0 +1,72 @@
+// Maps the @nl-* palette onto the base variables. Imported by the light and dark
+// ui-variables after they define the palette; never imports ui-variables itself,
+// so it resolves against whichever package imported it.
+@accent-primary: @nl-accent;
+@accent-primary-dark: darken(@nl-accent, 8%);
+@component-active-color: @nl-accent;
+@component-active-bg: @nl-panel;
+
+@background-primary: @nl-panel;
+@background-off-primary: @nl-panel;
+@background-secondary: @nl-alt;
+@background-tertiary: @nl-faint;
+@background-gradient: none;
+
+@border-color-primary: @nl-line;
+@border-color-secondary: @nl-line;
+@border-color-divider: @nl-line;
+
+@text-color: @nl-text;
+@text-color-subtle: @nl-muted;
+@text-color-very-subtle: @nl-faint;
+@text-color-inverse: @nl-accent-fg;
+@text-color-heading: @nl-text;
+@text-color-link: @nl-accent;
+@text-color-link-hover: @accent-primary-dark;
+@text-color-link-active: @accent-primary-dark;
+
+@font-family-sans-serif: 'Geist', system-ui, sans-serif;
+@font-family-serif: 'Newsreader', Georgia, serif;
+@line-height-base: 1.45;
+
+@border-radius-small: 6px;
+@border-radius-base: 8px;
+@border-radius-large: 10px;
+
+@btn-default-bg-color: @nl-panel;
+@btn-border-color: @nl-line;
+@btn-icon-color: @nl-muted;
+@btn-emphasis-bg-color: @nl-accent;
+@btn-emphasis-text-color: @nl-accent-fg;
+
+@dropdown-default-bg-color: @nl-panel;
+@dropdown-default-border-color: @nl-line;
+@input-bg: @nl-panel;
+@input-border-color: @nl-line;
+
+@toolbar-background-color: @nl-panel;
+@panel-background-color: @nl-bg;
+@source-list-bg: @nl-bg;
+@source-list-inset-bg: @nl-bg;
+@source-list-active-bg: @nl-soft;
+@source-list-active-color: @nl-soft-fg;
+
+@list-bg: @nl-panel;
+@list-border: @nl-line;
+@list-hover-bg: @nl-alt;
+@list-focused-bg: @nl-sel;
+@list-focused-color: @nl-text;
+@list-focused-border: @nl-line;
+@list-selected-bg: @nl-sel;
+@list-selected-color: @nl-text;
+@list-selected-border: @nl-line;
+
+@menu-item-color-hover: @nl-soft;
+@menu-item-color-selected: @nl-accent;
+@menu-text-color-selected: @nl-accent-fg;
+
+@ai-triage-color: @nl-ai;
+@ai-triage-text-color: @nl-ai-fg;
+@ai-triage-warn-bg: @nl-warn-soft;
+@ai-triage-warn-color: @nl-warn-fg;
+@ai-triage-warn-border: @nl-warn-line;
