@@ -14,6 +14,11 @@ const MAX_ENTRIES = 5000;
 class TriageStore extends MailspringStore {
   _entries: Map<string, TriageEntry> | null = null;
 
+  constructor() {
+    super();
+    AppEnv.config.onDidChange('ai-triage.spamThreshold', () => this.trigger());
+  }
+
   _file() {
     return path.join(AppEnv.getConfigDirPath(), 'ai-triage-scores.json');
   }
