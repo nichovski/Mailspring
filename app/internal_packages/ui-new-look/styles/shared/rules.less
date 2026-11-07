@@ -200,7 +200,7 @@
       justify-content: center;
       gap: 8px;
       min-height: 44px;
-      margin: 0 0 14px;
+      margin: 10px 0 14px;
       border: 0;
       border-radius: 10px;
       background: @nl-accent;
@@ -218,6 +218,203 @@
         border: 1px solid currentColor;
         opacity: 0.8;
       }
+    }
+  }
+
+  // The account row replaces the dropdown, and the flat list needs no section title.
+  .account-switcher {
+    display: none;
+  }
+  .account-sidebar-sections > .outline-view:first-child > .heading {
+    display: none;
+  }
+
+  .new-look-sidebar-header .account-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 48px;
+    padding: 6px 10px;
+    box-sizing: border-box;
+    border: 1px solid @nl-line;
+    border-radius: 10px;
+    background: @nl-panel;
+    color: @nl-text;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+
+    .avatars {
+      display: flex;
+      flex: none;
+    }
+    .avatar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      box-sizing: border-box;
+      border: 2px solid @nl-panel;
+      border-radius: 50%;
+      background: @nl-accent;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 600;
+
+      & + .avatar {
+        margin-left: -8px;
+      }
+      &.more {
+        background: @nl-alt;
+        color: @nl-muted;
+        font-size: 10px;
+      }
+    }
+    .text {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .title {
+      font-weight: 500;
+    }
+    .subtitle {
+      overflow: hidden;
+      font-size: 12px;
+      color: @nl-faint;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    svg {
+      color: @nl-faint;
+    }
+  }
+
+  .new-look-sidebar-footer {
+    order: 3;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0 12px;
+    padding: 10px 0 8px 10px;
+    border-top: 1px solid @nl-line;
+    background: @nl-bg;
+
+    .dot {
+      flex: none;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+
+      &.ok {
+        background: #16a34a;
+      }
+      &.busy {
+        background: @nl-faint;
+      }
+      &.error {
+        background: @nl-warn-fg;
+      }
+    }
+    .status {
+      flex: 1;
+      padding-left: 4px;
+      font-size: 12px;
+      color: @nl-faint;
+    }
+    button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: @nl-muted;
+      cursor: pointer;
+
+      &:hover {
+        background: @nl-alt;
+      }
+    }
+  }
+
+  // ----- Thread list: header -----
+
+  // The triage bar has order -1, so the header sits above it.
+  .new-look-list-header {
+    order: -2;
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 16px 12px;
+    background: @nl-panel;
+    border-bottom: 1px solid @nl-line;
+
+    .title-row {
+      display: flex;
+      flex: 1;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+    }
+    h1 {
+      margin: 0;
+      overflow: hidden;
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: @nl-text;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .count {
+      font-size: 13px;
+      color: @nl-faint;
+      white-space: nowrap;
+    }
+    .segmented {
+      display: flex;
+      gap: 2px;
+      padding: 3px;
+      border: 1px solid @nl-line;
+      border-radius: 9px;
+      background: @nl-alt;
+
+      button {
+        min-height: 30px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: @nl-faint;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+
+        &.on {
+          background: @nl-panel;
+          color: @nl-text;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+        }
+      }
+    }
+  }
+  .column-ThreadList:has(.ai-triage-bar) {
+    .new-look-list-header {
+      padding-bottom: 14px;
+      border-bottom: 0;
+    }
+    .ai-triage-bar {
+      padding-top: 0;
     }
   }
 

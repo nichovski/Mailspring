@@ -11,6 +11,7 @@ import {
   Label,
   ExtensionRegistry,
   RegExpUtils,
+  MailboxPerspective,
   localized,
 } from 'mailspring-exports';
 
@@ -31,6 +32,33 @@ function toggleSectionCollapsed(section: ISidebarSection) {
     return;
   }
   SidebarActions.setKeyCollapsed(section.title, !isSectionCollapsed(section.title));
+}
+
+// New Look's flat list follows its design; rows the design does not name keep their order after these.
+const FLAT_ORDER = [
+  'AiTriagePriority',
+  'inbox',
+  'starred',
+  'snoozed',
+  'sent',
+  'drafts',
+  'archive',
+  'all',
+  'trash',
+  'AiTriageProbableSpam',
+];
+
+function flatKey(item: ISidebarItem): string {
+  const p = item.perspective as MailboxPerspective & {
+    unread?: boolean;
+    starred?: boolean;
+    drafts?: boolean;
+  };
+  if (p.unread) return 'unread';
+  if (p.starred) return 'starred';
+  if (p.drafts) return 'drafts';
+  const [first] = p.categories();
+  return (first && first.role) || item.id;
 }
 
 class SidebarSection {
@@ -166,6 +194,19 @@ class SidebarSection {
       title: localized('All Accounts'),
       items,
     };
+  }
+
+  static flatSectionForAccounts(accounts?: Account[]): ISidebarSection {
+    const section = this.standardSectionForAccounts(accounts);
+    const rank = (item: ISidebarItem) => {
+      const i = FLAT_ORDER.indexOf(flatKey(item));
+      return i === -1 ? FLAT_ORDER.length : i;
+    };
+    const items = section.items
+      .filter((item) => flatKey(item) !== 'unread')
+      .map((item) => ({ ...item, children: [] }))
+      .sort((a, b) => rank(a) - rank(b));
+    return { ...section, items };
   }
 
   static forUserCategories(

@@ -4,39 +4,33 @@ import { RetinaImg } from 'mailspring-component-kit';
 import { ipcRenderer } from 'electron';
 import * as AccountCommands from '../account-commands';
 
+export function showAccountMenu(accounts: Account[], sidebarAccountIds: string[]) {
+  const template = AccountCommands.menuTemplate(accounts, sidebarAccountIds, {
+    clickHandlers: true,
+  }).concat([
+    { type: 'separator' },
+    {
+      label: `${localized('Add Account')}...`,
+      click: () => ipcRenderer.send('command', 'application:add-account'),
+    },
+    {
+      label: `${localized('Manage Accounts')}...`,
+      click: () => {
+        Actions.switchPreferencesTab('Accounts');
+        Actions.openPreferences();
+      },
+    },
+  ]);
+  require('@electron/remote').Menu.buildFromTemplate(template).popup({});
+}
+
 export default class AccountSwitcher extends React.Component<{
   accounts: Account[];
   sidebarAccountIds: string[];
 }> {
   static displayName = 'AccountSwitcher';
 
-  _makeMenuTemplate = () => {
-    let template = AccountCommands.menuTemplate(this.props.accounts, this.props.sidebarAccountIds, {
-      clickHandlers: true,
-    });
-    template = template.concat([
-      { type: 'separator' },
-      { label: `${localized('Add Account')}...`, click: this._onAddAccount },
-      { label: `${localized('Manage Accounts')}...`, click: this._onManageAccounts },
-    ]);
-    return template;
-  };
-
-  // Handlers
-
-  _onAddAccount = () => {
-    ipcRenderer.send('command', 'application:add-account');
-  };
-
-  _onManageAccounts = () => {
-    Actions.switchPreferencesTab('Accounts');
-    Actions.openPreferences();
-  };
-
-  _onShowMenu = () => {
-    const menu = require('@electron/remote').Menu.buildFromTemplate(this._makeMenuTemplate());
-    menu.popup({});
-  };
+  _onShowMenu = () => showAccountMenu(this.props.accounts, this.props.sidebarAccountIds);
 
   _onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {

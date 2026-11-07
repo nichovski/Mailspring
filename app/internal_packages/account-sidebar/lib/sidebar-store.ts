@@ -152,7 +152,10 @@ class SidebarStore extends MailspringStore {
     }
     const multiAccount = accounts.length > 1;
 
-    this._sections[Sections.Standard] = SidebarSection.standardSectionForAccounts(accounts);
+    const flat = ExtensionRegistry.AccountSidebar.extensions().some((ext) => ext.flatSidebar);
+    this._sections[Sections.Standard] = flat
+      ? SidebarSection.flatSectionForAccounts(accounts)
+      : SidebarSection.standardSectionForAccounts(accounts);
     this._sections[Sections.User] = accounts.map(function (acc) {
       const opts: { title?: string; collapsible?: boolean } = {};
       if (multiAccount) {
