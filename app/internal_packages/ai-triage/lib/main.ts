@@ -10,6 +10,9 @@ import {
 import { TriageChip, TriageMeter } from './triage-badge';
 import { TriageBar } from './triage-bar';
 import { TriageWarningBar } from './triage-warning-bar';
+import { AiSummaryCard } from './reading-summary';
+import { AiReplySuggestions } from './reading-replies';
+import { AiDraftBar } from './reading-draft-bar';
 import { PriorityExtension, ProbableSpamExtension } from './triage-perspectives';
 import TriageScorer from './triage-scorer';
 import { Disposable } from 'event-kit';
@@ -24,6 +27,10 @@ export const config = {
     default: 90,
     minimum: 50,
     maximum: 99,
+  },
+  reading: {
+    type: 'boolean',
+    default: false,
   },
 };
 
@@ -58,6 +65,9 @@ export function activate() {
   ComponentRegistry.register(TriageChip, { role: 'Thread:MailLabel' });
   ComponentRegistry.register(TriageWarningBar, { role: 'MessageListHeaders' });
   ComponentRegistry.register(TriageBar, { location: WorkspaceStore.Location.ThreadList });
+  ComponentRegistry.register(AiSummaryCard, { role: 'MessageListHeaders' });
+  ComponentRegistry.register(AiReplySuggestions, { role: 'MessageListReplyArea' });
+  ComponentRegistry.register(AiDraftBar, { role: 'Composer:Footer' });
 
   preferencesTab = new PreferencesUIStore.TabItem({
     tabId: 'AiTriage',
@@ -77,6 +87,9 @@ export function deactivate() {
   ComponentRegistry.unregister(TriageChip);
   ComponentRegistry.unregister(TriageWarningBar);
   ComponentRegistry.unregister(TriageBar);
+  ComponentRegistry.unregister(AiSummaryCard);
+  ComponentRegistry.unregister(AiReplySuggestions);
+  ComponentRegistry.unregister(AiDraftBar);
   PreferencesUIStore.unregisterPreferencesTab(preferencesTab);
   preferencesTab = null;
 }

@@ -6,25 +6,33 @@ import { ThresholdSlider } from './threshold-slider';
 
 export default class PreferencesTriage extends React.Component<
   Record<string, never>,
-  { enabled: boolean }
+  { enabled: boolean; reading: boolean }
 > {
   static displayName = 'PreferencesTriage';
 
-  state = { enabled: !!AppEnv.config.get('ai-triage.enabled') };
-  _subscription?: Disposable;
+  state = {
+    enabled: !!AppEnv.config.get('ai-triage.enabled'),
+    reading: !!AppEnv.config.get('ai-triage.reading'),
+  };
+  _subscriptions: Disposable[] = [];
 
   componentDidMount() {
-    this._subscription = AppEnv.config.onDidChange('ai-triage.enabled', ({ newValue }) =>
-      this.setState({ enabled: !!newValue })
-    );
+    this._subscriptions = [
+      AppEnv.config.onDidChange('ai-triage.enabled', ({ newValue }) =>
+        this.setState({ enabled: !!newValue })
+      ),
+      AppEnv.config.onDidChange('ai-triage.reading', ({ newValue }) =>
+        this.setState({ reading: !!newValue })
+      ),
+    ];
   }
 
   componentWillUnmount() {
-    this._subscription?.dispose();
+    this._subscriptions.forEach((s) => s.dispose());
   }
 
   render() {
-    const { enabled } = this.state;
+    const { enabled, reading } = this.state;
     return (
       <div className="container-ai-triage">
         <section>
@@ -49,6 +57,27 @@ export default class PreferencesTriage extends React.Component<
           </p>
           <label className="threshold-label">{localized('Spam threshold')}</label>
           <ThresholdSlider />
+        </section>
+        <section>
+          <h6>{localized('Summaries and replies')}</h6>
+          <p>
+            {localized(
+              'Shows a summary, action items and suggested replies for the conversation you open, and can draft a reply.'
+            )}
+          </p>
+          <div className="toggle-row">
+            <Switch
+              checked={reading}
+              onChange={() => AppEnv.config.set('ai-triage.reading', !reading)}
+              label={localized('Enable summaries and replies')}
+            />
+            <span>{localized('Enable summaries and replies')}</span>
+          </div>
+          <p className="note">
+            {localized(
+              'The text of the conversation you open (up to the last 8 messages, without quoted text) is sent to the Mailspring backend and an AI provider.'
+            )}
+          </p>
         </section>
       </div>
     );

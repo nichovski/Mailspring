@@ -379,6 +379,19 @@ class MessageList extends React.Component<Record<string, unknown>, MessageListSt
 
       if (isBeforeReplyArea) {
         elements.push(
+          <InjectedComponentSet
+            key="reply-area-actions"
+            className="message-list-reply-actions"
+            matching={{ role: 'MessageListReplyArea' }}
+            exposedProps={{
+              thread: this.state.currentThread,
+              messages: this.state.messages,
+              replyType: this._replyType(),
+            }}
+            direction="column"
+          />
+        );
+        elements.push(
           <MessageListReplyArea
             key="reply-area"
             onClick={this._onClickReplyArea}
