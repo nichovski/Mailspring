@@ -35,6 +35,10 @@ export const config = {
     type: 'boolean',
     default: false,
   },
+  dayCollapsed: {
+    type: 'boolean',
+    default: false,
+  },
 };
 
 let preferencesTab: any = null;
