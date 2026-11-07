@@ -179,6 +179,7 @@
       padding: 4px 8px 14px;
     }
     .brand-mark {
+      flex: none;
       width: 28px;
       height: 28px;
       border-radius: 8px;
@@ -189,6 +190,10 @@
       justify-content: center;
     }
     .brand-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       font-weight: 600;
       font-size: 15px;
       letter-spacing: -0.01em;
@@ -279,7 +284,10 @@
       min-width: 0;
     }
     .title {
+      overflow: hidden;
       font-weight: 500;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .subtitle {
       overflow: hidden;
@@ -289,6 +297,7 @@
       white-space: nowrap;
     }
     svg {
+      flex: none;
       color: @nl-faint;
     }
   }
@@ -322,7 +331,11 @@
     }
     .status {
       flex: 1;
+      min-width: 0;
+      overflow: hidden;
       padding-left: 4px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       font-size: 12px;
       color: @nl-faint;
     }
