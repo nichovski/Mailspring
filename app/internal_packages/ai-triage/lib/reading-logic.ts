@@ -77,8 +77,16 @@ export function buildThread(
   return { me, subject, messages: picked.reverse() };
 }
 
+// One block per line, as the composer writes them: joining lines with <br/> makes the editor
+// show every blank line twice.
 export const textToHtml = (text: string) =>
-  text.trim().split('\n').map(DOMUtils.escapeHTMLCharacters).join('<br/>');
+  text
+    .trim()
+    .split('\n')
+    .map((line) =>
+      line.trim() ? `<div>${DOMUtils.escapeHTMLCharacters(line)}</div>` : '<div><br/></div>'
+    )
+    .join('');
 
 /** Swaps the text above the signature and the quote of a reply body for `html`. */
 export function replaceReplyText(body: string, html: string): string {
@@ -86,7 +94,7 @@ export function replaceReplyText(body: string, html: string): string {
     body.search(/<signature[\s>]/i),
     body.search(RegExpUtils.nativeQuoteStartRegex()),
   ].filter((i) => i >= 0);
-  return cuts.length ? `${html}<br/><br/>${body.slice(Math.min(...cuts))}` : html;
+  return cuts.length ? `${html}<div><br/></div>${body.slice(Math.min(...cuts))}` : html;
 }
 
 const isStrings = (v: unknown): v is string[] =>

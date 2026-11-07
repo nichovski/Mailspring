@@ -91,7 +91,9 @@ describe('reading-logic', function () {
 
   describe('textToHtml', function () {
     it('escapes html and turns line breaks into br', function () {
-      expect(textToHtml('a < b & c\nd')).toBe('a &lt; b &amp; c<br/>d');
+      expect(textToHtml('a < b & c\n\nd')).toBe(
+        '<div>a &lt; b &amp; c</div><div><br/></div><div>d</div>'
+      );
     });
   });
 
@@ -102,10 +104,10 @@ describe('reading-logic', function () {
 
     it('keeps the signature and the quote', function () {
       const out = replaceReplyText(`old<br/>${signature}${quote}`, 'new');
-      expect(out).toBe(`new<br/><br/>${signature}${quote}`);
+      expect(out).toBe(`new<div><br/></div>${signature}${quote}`);
     });
     it('keeps the quote when there is no signature', function () {
-      expect(replaceReplyText(`old<br/><br/>${quote}`, 'new')).toBe(`new<br/><br/>${quote}`);
+      expect(replaceReplyText(`old<br/><br/>${quote}`, 'new')).toBe(`new<div><br/></div>${quote}`);
     });
     it('returns only the new html when there is neither', function () {
       expect(replaceReplyText('old', 'new')).toBe('new');
