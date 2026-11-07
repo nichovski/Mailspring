@@ -30,8 +30,28 @@ export class SidebarFooter extends React.Component {
     }
     return (
       <div className="new-look-sidebar-footer">
-        <span className={`dot ${state}`} aria-hidden="true" />
+        <span className={`dot ${state}`} title={status} aria-hidden="true" />
         <span className="status">{status}</span>
+        <button
+          aria-label={localized('Sync New Mail Now')}
+          title={localized('Sync New Mail Now')}
+          onClick={() => AppEnv.mailsyncBridge.sendSyncMailNow()}
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M20 11a8 8 0 0 0-14.9-3.5M4 4v4h4" />
+            <path d="M4 13a8 8 0 0 0 14.9 3.5M20 20v-4h-4" />
+          </svg>
+        </button>
         <button
           aria-label={localized('Add Account')}
           onClick={() => ipcRenderer.send('command', 'application:add-account')}
