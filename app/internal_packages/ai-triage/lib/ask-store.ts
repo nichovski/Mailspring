@@ -93,16 +93,16 @@ class AskStore extends MailspringStore {
    * The sync engine downloads bodies of older mail only on demand, so the bodies Ask will read are
    * requested and waited for briefly; any still missing fall back to the snippet or are skipped.
    */
-  async _messages(threads: Thread[]): Promise<Message[]> {
+  async _messages(threads: Thread[], alive: () => boolean): Promise<Message[]> {
     let messages = await DatabaseStore.findAll<Message>(Message)
       .where({ threadId: threads.map((t) => t.id) })
       .include(Message.attributes.body)
       .background();
     let missing = threads.flatMap((t) => askPick(t, messages)).filter((m) => m.body === null);
-    if (missing.length) {
+    if (missing.length && alive()) {
       Actions.fetchBodies(missing);
       const deadline = Date.now() + BODY_WAIT_MS;
-      while (missing.length && Date.now() < deadline) {
+      while (missing.length && Date.now() < deadline && alive()) {
         await new Promise((resolve) => setTimeout(resolve, BODY_POLL_MS));
         const arrived = (
           await DatabaseStore.findAll<Message>(Message)
@@ -170,7 +170,11 @@ class AskStore extends MailspringStore {
         return;
       }
       this._set(ask, { status: 'answering' });
-      const payload = askConversations(threads, await this._messages(threads));
+      const messages = await this._messages(threads, () => this._ask === ask);
+      if (this._ask !== ask) {
+        return;
+      }
+      const payload = askConversations(threads, messages);
       if (payload.conversations.length === 0) {
         this._set(ask, { status: 'done', answer: localized('No matching mail found.') });
         return;

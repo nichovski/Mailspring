@@ -8,8 +8,9 @@ const MAX_SNIPPET = 400;
 export const ASK_MAX_THREADS = 40;
 const ASK_MAX_MESSAGES = 6;
 const ASK_MESSAGE_CHARS = 2000;
-// Even at 2 bytes per character this stays under nginx's 256k body limit.
-const ASK_TOTAL_CHARS = 100_000;
+// UTF-8 bytes of the JSON-encoded text, leaving room under nginx's 256k body limit.
+const ASK_TOTAL_BYTES = 200_000;
+const jsonBytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).length;
 const DAY_MS = 24 * 3600_000;
 // The meter's High level. Medium and up counted most recent mail as needing the user, which made
 // the brief's count meaningless (126 vs 16 on a real 22-account inbox).
@@ -240,7 +241,7 @@ export const askPick = (thread: Thread, messages: Message[]) =>
 
 /**
  * The Ask payload: matching threads newest first, each with the new text of its latest messages in
- * date order. It stops at the text budget, so `threads` (aligned with `conversations`, for the
+ * date order. It stops at the size budget, so `threads` (aligned with `conversations`, for the
  * answer's source numbers) can be shorter than the input.
  */
 export function askConversations(
@@ -262,8 +263,8 @@ export function askConversations(
       continue;
     }
     const subject = (thread.subject || '').slice(0, 1000);
-    const size = picked.reduce((n, m) => n + m.text.length + m.from.length, subject.length);
-    if (used.length && total + size > ASK_TOTAL_CHARS) {
+    const size = jsonBytes({ subject, messages: picked });
+    if (used.length && total + size > ASK_TOTAL_BYTES) {
       break;
     }
     total += size;

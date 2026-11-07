@@ -290,8 +290,18 @@ describe('assistant-logic', function () {
       );
       const { threads, conversations } = askConversations(ids.map(thread), messages);
       expect(threads.length).toBe(conversations.length);
-      expect(threads.length).toBe(8);
+      expect(threads.length).toBe(16);
       expect(threads[0].id).toBe('t0');
+    });
+
+    it('counts UTF-8 bytes, so non-Latin text fits fewer threads', function () {
+      const ids = Array.from({ length: 40 }, (_, i) => `t${i}`);
+      const messages = ids.flatMap((id) =>
+        [1, 2, 3, 4, 5, 6].map((d) => msg(id, d, '\u6f22'.repeat(2000)))
+      );
+      const { threads, conversations } = askConversations(ids.map(thread), messages);
+      expect(new TextEncoder().encode(JSON.stringify(conversations)).length).toBeLessThan(200_000);
+      expect(threads.length).toBe(5);
     });
   });
 });
