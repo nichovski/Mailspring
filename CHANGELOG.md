@@ -15,6 +15,8 @@ Features:
 
 Bug Fixes:
 
+- The reading pane's minimum width is now 360px instead of 480px, so the folder list and the thread list can be widened in a narrow or tiled window.
+- The Ask badge is now vertically centered in the search bar.
 - Fixed actions taken right after Mailspring starts (such as marking muted mail read) being lost, sometimes with an "unable to sync" dialog, while the account's sync process was still starting.
 
 ## 1.26.2 (10/22/2026)
