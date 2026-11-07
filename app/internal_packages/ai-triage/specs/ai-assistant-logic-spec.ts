@@ -1,10 +1,13 @@
 import { Contact, DateUtils, Message, SearchQueryParser, Thread } from 'mailspring-exports';
 import {
+  askConversations,
+  broaden,
   mailItem,
   periodStart,
   pickDay,
   toPills,
   toQuery,
+  toAnswer,
   toSearch,
   todayString,
 } from '../lib/assistant-logic';
@@ -209,6 +212,96 @@ describe('assistant-logic', function () {
         date: '2026-11-06T09:41:00.000Z',
         snippet: '',
       });
+    });
+  });
+
+  describe('broaden', function () {
+    it('keeps people and dates and drops subject and words', function () {
+      const s = {
+        ...empty,
+        from: ['max@x.io'],
+        words: ['TSS'],
+        subject: ['Plan'],
+        since: '2024-11-07',
+      };
+      expect(broaden(s)).toEqual({ ...s, words: [], subject: [] });
+    });
+
+    it('returns null with no people or nothing to drop', function () {
+      expect(broaden({ ...empty, words: ['TSS'] })).toBe(null);
+      expect(broaden({ ...empty, from: ['max@x.io'] })).toBe(null);
+    });
+  });
+
+  describe('toAnswer', function () {
+    it('keeps integer, unique source numbers', function () {
+      expect(toAnswer({ answer: ' Yes. ', sources: [2, 2, 1.5, '3', 1] })).toEqual({
+        answer: 'Yes.',
+        sources: [2, 1],
+      });
+      expect(toAnswer({ answer: 'Yes.' })).toEqual({ answer: 'Yes.', sources: [] });
+      expect(toAnswer({ answer: ' ', sources: [1] })).toBe(null);
+    });
+  });
+
+  describe('askConversations', function () {
+    const thread = (id: string) => new Thread({ id, subject: `S ${id}` });
+    const msg = (threadId: string, day: number, text: string, extra = {}) =>
+      new Message({
+        threadId,
+        from: [new Contact({ name: 'Max', email: 'max@x.io' })],
+        date: new Date(`2026-01-${String(day).padStart(2, '0')}T10:00:00Z`),
+        body: text,
+        plaintext: true,
+        ...extra,
+      });
+
+    it('keeps the latest 6 non-draft messages per thread in date order', function () {
+      const messages = [1, 2, 3, 4, 5, 6, 7, 8].map((d) => msg('a', d, `m${d}`));
+      messages.push(msg('a', 9, 'draft', { draft: true }));
+      const { threads, conversations } = askConversations([thread('a')], messages);
+      expect(threads.map((t) => t.id)).toEqual(['a']);
+      expect(conversations[0].subject).toBe('S a');
+      expect(conversations[0].messages.map((m) => m.text)).toEqual([
+        'm3',
+        'm4',
+        'm5',
+        'm6',
+        'm7',
+        'm8',
+      ]);
+      expect(conversations[0].messages[0].from).toBe('Max <max@x.io>');
+    });
+
+    it('drops quoted lines, cuts long text and skips threads with nothing to send', function () {
+      const { threads, conversations } = askConversations(
+        [thread('a'), thread('b')],
+        [msg('a', 1, `new\n> old\n${'x'.repeat(3000)}`)]
+      );
+      expect(threads.map((t) => t.id)).toEqual(['a']);
+      expect(conversations[0].messages[0].text.startsWith('new\nxx')).toBe(true);
+      expect(conversations[0].messages[0].text.length).toBe(2000);
+    });
+
+    it('stops at the text budget, keeping threads aligned with conversations', function () {
+      const ids = Array.from({ length: 40 }, (_, i) => `t${i}`);
+      const messages = ids.flatMap((id) =>
+        [1, 2, 3, 4, 5, 6].map((d) => msg(id, d, 'x'.repeat(2000)))
+      );
+      const { threads, conversations } = askConversations(ids.map(thread), messages);
+      expect(threads.length).toBe(conversations.length);
+      expect(threads.length).toBe(16);
+      expect(threads[0].id).toBe('t0');
+    });
+
+    it('counts UTF-8 bytes, so non-Latin text fits fewer threads', function () {
+      const ids = Array.from({ length: 40 }, (_, i) => `t${i}`);
+      const messages = ids.flatMap((id) =>
+        [1, 2, 3, 4, 5, 6].map((d) => msg(id, d, '\u6f22'.repeat(2000)))
+      );
+      const { threads, conversations } = askConversations(ids.map(thread), messages);
+      expect(new TextEncoder().encode(JSON.stringify(conversations)).length).toBeLessThan(200_000);
+      expect(threads.length).toBe(5);
     });
   });
 });

@@ -83,6 +83,27 @@ export class AskCard extends React.Component {
         <p aria-live="polite" className={ask.status === 'error' ? 'error' : ''}>
           {waiting ? localized('Looking through your mail…') : ask.answer}
         </p>
+        {ask.sources && ask.sources.length > 0 && (
+          <div className="sources">
+            <span className="label">{localized('From these emails')}</span>
+            {ask.sources.map((thread) => (
+              <button
+                className="source"
+                key={thread.id}
+                onClick={() => Actions.setFocus({ collection: 'thread', item: thread })}
+              >
+                <span className="subject">{thread.subject || localized('(No Subject)')}</span>
+                <span className="date">
+                  {thread.lastMessageReceivedTimestamp.toLocaleDateString(undefined, {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                  })}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         {ask.pills && ask.pills.length > 0 && (
           <div className="pills">
             <span className="label">{localized('Searched for')}</span>

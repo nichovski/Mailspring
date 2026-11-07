@@ -1,6 +1,6 @@
 # Ask and Your day
 
-**Date:** November 7, 2026 · **Branch:** `feat/ai-ask` · **Backend:** `mailspring-backend` `feat/ai-ask`
+**Date:** November 7, 2026 · **Branch:** `feat/ai-ask`, `feat/ask-deep` · **Backend:** `mailspring-backend` `feat/ai-ask`, `feat/ask-deep`
 
 ## What it does
 
@@ -11,7 +11,9 @@
   - An arrow next to the time hides the brief, leaving only the header, and shows it again. The choice is saved in `ai-triage.dayCollapsed`. It is an icon, not the word "Hide", because the sidebar has no room for a word next to the time. In a very narrow sidebar only the title shortens.
 - **Ask**: type a question in the search bar and click the **Ask** badge inside it. It needs Summaries and replies on, and works in every theme.
   - The AI turns the question into a normal Mailspring search, so the thread list shows the matches.
-  - An **Answer** card above the list gives a 1-3 sentence answer from the matches, the "Searched for" pills, and Clear (which goes back to the view you came from).
+  - An **Answer** card above the list answers from the matches. A simple question gets 1-3 sentences. A question about a project, a client or a history ("check all emails from X in the last 2 years and tell me about project Y") gets up to 200 words: what it is, the dates and decisions in order, and what is still open.
+  - Under the answer, **From these emails** lists up to 6 emails it used. Clicking one opens it and keeps the answer.
+  - The card also shows the "Searched for" pills and Clear (which goes back to the view you came from). Date pills show the year when it isn't this year.
   - Enter still runs a plain search with no AI.
   - The placeholder becomes "Search, or ask about your mail".
 
@@ -38,8 +40,13 @@ These are the last AI parts of the redesign canvas. They reuse the OpenRouter se
      - each value is quoted.
      It then builds the query, for example `from:"Peter" "contract"`. Date ranges carry an explicit `00:00`, because chrono reads a bare date as noon.
   3. `Actions.searchQuerySubmitted(query)` runs the normal search view. `SearchStore` remembers the previous view, for Clear.
-  4. The same query runs locally (`NOT (in:trash OR in:spam)`, newest 8). With no matches the card says "No matching mail found." with no second call. Otherwise the question plus the 8 snippets go to `POST /api/ai/ask/answer`.
-  - The ask is dropped when the focused view stops being its search, and late results are ignored. Filters are cached in memory per day and question; answers are not cached.
+  4. The same query runs locally (`NOT (in:trash OR in:spam)`, newest 40 threads).
+     - **Fallback:** with no matches, and when the filters name people plus subject or words, it runs again with only the people and dates (`broaden`). The project name is often only in the body, or not written at all, so this lets the model find the topic in that person's mail. The pills and the search field show the wider search.
+     - With still no matches the card says "No matching mail found." with no second call.
+  5. **What is read** (`askPick`, `askConversations`): for each thread, newest first, its latest 6 non-draft messages in date order, new text only (quoted replies removed, the same `messageText` the summaries use), each cut to 2000 characters. It stops before 200 KB of JSON-encoded UTF-8, so the request stays under nginx's 256 KB body limit for any script. About 16 long English threads or 5 long Chinese ones fit; real mail is much shorter.
+  6. **Old bodies:** the sync engine downloads the bodies of older mail only when a thread is opened. Ask requests the missing ones (`Actions.fetchBodies`) and waits up to 20 s, the same pattern as `views/lib/bridge/bodies.ts`. A body that doesn't arrive falls back to the snippet, or the message is skipped.
+  7. The question and the conversations go to `POST /api/ai/ask/answer`. The reply's `sources` are 1-based conversation numbers, mapped back to threads for the email list.
+  - The ask is dropped when the focused view stops being its search, and late results are ignored. A cleared or replaced ask stops waiting for bodies and sends nothing. Filters are cached in memory per day and question; answers are not cached.
   - The badge fills a `ThreadSearchBar:Ask` slot that ai-triage fills while `ai-triage.reading` is on.
 
 ## Decisions
@@ -50,20 +57,30 @@ These are the last AI parts of the redesign canvas. They reuse the OpenRouter se
 - **No "Try asking" chips.** Static examples are not about your mail, and generated ones would cost an AI call for every view.
 - **No label filter.** The model doesn't know your labels and would guess wrong.
 - **"Needs you" uses attention ≥ 0.75, not 0.4.** In the live check on a 22-account inbox, 0.4 counted 126 conversations and 0.75 counted 16. The brief's first number has to mean something.
-- **Snippets only**, never full bodies, for Ask and for Your day.
+- **Your day sends snippets only.** Ask sends the new text of whole messages, because a project question can't be answered from 400-character snippets. It only runs when you click Ask, quoted replies are left out, and OpenRouter is called with `data_collection: 'deny'`.
+- **Ask reads up to 40 threads, newest first.** Older threads past the size limit are not read. For a long history, narrow the question with a date range or a sender.
+- **The fallback drops the topic, not the person.** Dropping the sender too would search all mail for the topic, which is what found nothing.
 
 ## Review
 
-GLM-5.3 Flash and DeepSeek V4 Flash reviewed both repos.
+GLM-5.3 Flash and DeepSeek V4 Flash reviewed both repos, for the first version and again for whole conversations.
 
-Fixed:
+Fixed (whole conversations):
+- The budget counted characters, so Chinese or Japanese mail, or text with many line breaks, could go past the 256 KB limit. It now counts JSON-encoded UTF-8 bytes. All four reviews raised it.
+- A cleared or replaced ask kept waiting for bodies and still sent the mail.
+- The answer token limit went from 1200 to 2000, so long non-Latin answers are not cut off.
+
+Rejected after checking the code (whole conversations):
+- "A non-array `sources` may not throw". `list()` throws on anything but an array or `undefined`, and the harness checks it.
+
+Fixed (first version):
 - A value ending in a backslash would escape the closing quote. Backslashes are now removed.
 - Repeated values made duplicate pills.
 - Two Your day checks could overlap while the inbox query ran.
 - The brief is now announced to screen readers (`aria-live`).
 - The search reply limit went from 300 to 400 tokens, so its JSON is not cut off.
 
-Rejected after checking the code:
+Rejected after checking the code (first version):
 - "Query injection via brackets and OR". Every value is quoted, so they stay plain text.
 - "Unbounded Your day retries". The attempt is recorded before the request, so there is one per period.
 - Listener "leaks" on singleton stores.
@@ -75,10 +92,11 @@ Won't fix:
 ## Validation
 
 - **Backend:** build, then on a scratch server with an empty key, `test/ai-ask.mjs`, `test/ai-reading.mjs` (after the `complete()` refactor) and the other harnesses print ALL CHECKS PASSED, and no email text appears in the log.
-- **Client:** lint and typecheck pass. `npm test -- --spec-file-pattern='ai-triage|thread-search|new-look'` gives 154 passing.
+- **Client:** lint and typecheck pass. `npm test -- --spec-file-pattern='ai-triage|thread-search|new-look'` gives 162 passing (154 before whole conversations).
 - **Dev app, New Look, local backend with the real key:**
   - **Your day:** a correct brief with names and deadlines. After a reload the saved brief was used with no new call. The card fits the narrow sidebar.
-  - **Real question:** "What does Peter need from me about the contract?" built `from:"Peter" "contract"`, listed the matches, and gave a correct answer.
+  - **Whole conversations, real question:** "Check all emails in the last 2 years from (a client's address) and tell me more about the project (name)". The topic search found nothing, the fallback found 19 threads from that sender, the old bodies were fetched, and the answer gave what the project is, a dated timeline over two years and the open request, with 6 source emails. 26 s the first time, 10 s once bodies were downloaded. Clicking a source opened the email and kept the answer.
+- **Real question:** "What does Peter need from me about the contract?" built `from:"Peter" "contract"`, listed the matches, and gave a correct answer.
   - **Real button:** the badge worked with typed text, including a date range.
   - **No answer in the mail:** a made-up question got an honest "None of these messages mention…".
   - **Clear:** went back to Inbox.
@@ -86,5 +104,6 @@ Won't fix:
 ## Notes
 
 - The model can read "this week" too wide (Nov 2 to 15 for a Saturday). The range is visible in the pills and in the query.
-- Server-side search results that arrive later join the list, but the answer uses only the newest 8 local matches.
+- Server-side search results that arrive later join the list, but the answer uses only the local matches.
+- Asking by name depends on the sender's display name. "Max Wood" matched a different sender (old project notifications with that name) and missed the person's real mail, which uses another display name. Asking with the email address is reliable.
 - Not checked on macOS or Windows.

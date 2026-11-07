@@ -1,9 +1,16 @@
 import { DatabaseStore, localized, Message, Thread } from 'mailspring-exports';
+import { messageText } from './reading-logic';
 import { effectiveSpam, isScore, TriageEntry, TriageScore } from './triage-logic';
 import { WINDOW } from './triage-scorer';
 
 export const MAX_THREADS = 8;
 const MAX_SNIPPET = 400;
+export const ASK_MAX_THREADS = 40;
+const ASK_MAX_MESSAGES = 6;
+const ASK_MESSAGE_CHARS = 2000;
+// UTF-8 bytes of the JSON-encoded text, leaving room under nginx's 256k body limit.
+const ASK_TOTAL_BYTES = 200_000;
+const jsonBytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).length;
 const DAY_MS = 24 * 3600_000;
 // The meter's High level. Medium and up counted most recent mail as needing the user, which made
 // the brief's count meaningless (126 vs 16 on a real 22-account inbox).
@@ -24,6 +31,14 @@ export interface AskSearch {
   before: string;
   unread: boolean;
   attachment: boolean;
+}
+export interface AskConversation {
+  subject: string;
+  messages: { from: string; date: string; text: string }[];
+}
+export interface AskAnswer {
+  answer: string;
+  sources: number[];
 }
 export interface DayBrief {
   t: number;
@@ -79,6 +94,18 @@ const anyOf = (field: string, values: string[]) => {
   return terms.length > 1 ? `(${terms.join(' OR ')})` : terms[0] || '';
 };
 
+/**
+ * The fallback for a search that found nothing: keeps the people and the dates and drops the
+ * subject and words, so the model can find the topic in that person's mail. Null when there are
+ * no people to keep or nothing to drop.
+ */
+export function broaden(s: AskSearch): AskSearch | null {
+  if (!(s.from.length || s.to.length) || !(s.subject.length || s.words.length)) {
+    return null;
+  }
+  return { ...s, subject: [], words: [] };
+}
+
 /** chrono reads a bare date as 12:00, so ranges carry an explicit midnight. */
 export function toQuery(s: AskSearch): string {
   return [
@@ -95,8 +122,11 @@ export function toQuery(s: AskSearch): string {
     .join(' ');
 }
 
-const dayLabel = (d: string) =>
-  new Date(`${d}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+const dayLabel = (d: string) => {
+  const date = new Date(`${d}T00:00:00`);
+  const year = date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric';
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year });
+};
 
 export function toPills(s: AskSearch): string[] {
   const list = (label: string, values: string[]) =>
@@ -114,7 +144,17 @@ export function toPills(s: AskSearch): string[] {
 }
 
 const nonEmpty = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
-export const toAnswer = (json: unknown) => nonEmpty((json as { answer?: unknown })?.answer);
+export function toAnswer(json: unknown): AskAnswer | null {
+  const { answer, sources } = (json || {}) as { answer?: unknown; sources?: unknown };
+  const text = nonEmpty(answer);
+  if (!text) {
+    return null;
+  }
+  const numbers = (Array.isArray(sources) ? sources : []).filter(
+    (n, i, all): n is number => Number.isInteger(n) && all.indexOf(n) === i
+  );
+  return { answer: text, sources: numbers };
+}
 export const toBrief = (json: unknown) => nonEmpty((json as { brief?: unknown })?.brief);
 
 export function parseDayFile(json: unknown): DayBrief | null {
@@ -160,10 +200,16 @@ export function pickDay(
   return { needs, spam };
 }
 
+const sender = (m?: Message) => {
+  const c = m && m.from[0];
+  return c
+    ? `${c.name || ''} <${c.email || ''}>${c.isMe() ? ' (me)' : ''}`.trim().slice(0, 500)
+    : '';
+};
+
 export function mailItem(thread: Thread, last?: Message): MailItem {
-  const c = last && last.from[0];
   return {
-    from: c ? `${c.name || ''} <${c.email || ''}>${c.isMe() ? ' (me)' : ''}`.trim() : '',
+    from: sender(last),
     subject: thread.subject || '',
     date: (last ? last.date : thread.lastMessageReceivedTimestamp).toISOString(),
     snippet: ((last && last.snippet) || '').slice(0, MAX_SNIPPET),
@@ -184,4 +230,46 @@ export async function mailItems(threads: Thread[]): Promise<MailItem[]> {
         .pop()
     )
   );
+}
+
+/** The messages Ask reads from a thread: its latest non-drafts, in date order. */
+export const askPick = (thread: Thread, messages: Message[]) =>
+  messages
+    .filter((m) => m.threadId === thread.id && !m.draft)
+    .sort((a, b) => +a.date - +b.date)
+    .slice(-ASK_MAX_MESSAGES);
+
+/**
+ * The Ask payload: matching threads newest first, each with the new text of its latest messages in
+ * date order. It stops at the size budget, so `threads` (aligned with `conversations`, for the
+ * answer's source numbers) can be shorter than the input.
+ */
+export function askConversations(
+  threads: Thread[],
+  messages: Message[]
+): { threads: Thread[]; conversations: AskConversation[] } {
+  const used: Thread[] = [];
+  const conversations: AskConversation[] = [];
+  let total = 0;
+  for (const thread of threads) {
+    const picked = askPick(thread, messages)
+      .map((m) => ({
+        from: sender(m),
+        date: m.date.toISOString(),
+        text: messageText(m).slice(0, ASK_MESSAGE_CHARS),
+      }))
+      .filter((m) => m.text);
+    if (!picked.length) {
+      continue;
+    }
+    const subject = (thread.subject || '').slice(0, 1000);
+    const size = jsonBytes({ subject, messages: picked });
+    if (used.length && total + size > ASK_TOTAL_BYTES) {
+      break;
+    }
+    total += size;
+    used.push(thread);
+    conversations.push({ subject, messages: picked });
+  }
+  return { threads: used, conversations };
 }

@@ -432,6 +432,9 @@
   border-radius: 12px;
   background: @ai-triage-soft;
   border: 1px solid @ai-triage-line;
+  // A project overview can run to 200 words; the thread list keeps the rest of the column.
+  max-height: 45vh;
+  overflow-y: auto;
 
   .head {
     display: flex;
@@ -457,8 +460,45 @@
     font-size: 14px;
     line-height: 1.5;
     color: @text-color;
+    white-space: pre-line;
 
     &.error { color: @text-color-subtle; }
+  }
+  .sources {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+
+    .label { margin-bottom: 2px; }
+  }
+  .source {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-height: 28px;
+    margin: 0 -8px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    text-align: left;
+    font-size: 13px;
+
+    &:hover { background: @background-primary; }
+    .subject {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: @ai-triage-text-color;
+    }
+    .date {
+      flex: none;
+      font-size: 12px;
+      color: @text-color-very-subtle;
+    }
   }
   .pills {
     display: flex;
