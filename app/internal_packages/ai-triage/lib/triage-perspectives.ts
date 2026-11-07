@@ -12,7 +12,7 @@ import { orderThreads } from './triage-logic';
 
 const WINDOW = 300;
 
-function inboxQuery(accountIds: string[]) {
+export function inboxQuery(accountIds: string[]) {
   const inboxIds = CategoryStore.getCategoriesWithRoles(accountIds, 'inbox').map((c) => c.id);
   return DatabaseStore.findAll<Thread>(Thread)
     .where([Thread.attributes.categories.containsAny(inboxIds)])

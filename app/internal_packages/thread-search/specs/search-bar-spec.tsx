@@ -6,7 +6,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
 import ReactTestUtils from 'react-dom/test-utils';
-import { Actions } from 'mailspring-exports';
+import { Actions, ComponentRegistry } from 'mailspring-exports';
 
 import ThreadSearchBar from '../lib/thread-search-bar';
 
@@ -24,5 +24,18 @@ describe('ThreadSearchBar', function () {
     const test = 'HeLlO wOrLd';
     ReactTestUtils.Simulate.input(this.input, { target: { innerText: test } as any });
     expect(Actions.searchQueryChanged).toHaveBeenCalledWith(test);
+  });
+
+  it('shows the ask placeholder when a component registers for the Ask role', function () {
+    const Dummy = () => null;
+    Dummy.displayName = 'DummyAsk';
+    ComponentRegistry.register(Dummy, { role: 'ThreadSearchBar:Ask' });
+    try {
+      const el = document.createElement('div');
+      ReactDOM.render(<ThreadSearchBar />, el);
+      expect(el.textContent).toContain('Search, or ask about your mail');
+    } finally {
+      ComponentRegistry.unregister(Dummy);
+    }
   });
 });

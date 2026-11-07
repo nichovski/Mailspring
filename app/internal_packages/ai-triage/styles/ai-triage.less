@@ -398,3 +398,133 @@
     color: @color-error;
   }
 }
+
+.ai-ask-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin: 0 2px 0 4px;
+  padding: 0 7px;
+  height: 20px;
+  line-height: 20px;
+  border: 0;
+  border-radius: 6px;
+  background: @ai-triage-soft;
+  color: @ai-triage-text-color;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:disabled { opacity: 0.6; }
+}
+
+.ai-ask-card {
+  // The thread list registers first in this column; order puts the card above it.
+  order: -1;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: @ai-triage-soft;
+  border: 1px solid @ai-triage-line;
+
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: @ai-triage-text-color;
+  }
+  .title { flex: 1; }
+  .clear {
+    min-height: 30px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: @ai-triage-text-color;
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: @text-color;
+
+    &.error { color: @text-color-subtle; }
+  }
+  .pills {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .label {
+    font-size: 12px;
+    color: @text-color-very-subtle;
+  }
+  .pill {
+    font-size: 12px;
+    font-weight: 500;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: @background-primary;
+    border: 1px solid @border-color-divider;
+    color: @text-color-subtle;
+  }
+}
+
+.ai-day-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 12px 12px 10px;
+  border-radius: 12px;
+  background: @ai-triage-soft;
+  border: 1px solid @ai-triage-line;
+
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: @ai-triage-text-color;
+  }
+  .title { flex: 1; }
+  .time {
+    font-weight: 500;
+    color: @text-color-very-subtle;
+  }
+  p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: @text-color;
+  }
+  .go {
+    align-self: flex-start;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 32px;
+    margin-left: -6px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: @ai-triage-text-color;
+    font-size: 13px;
+    font-weight: 600;
+
+    &:hover { background: fade(@ai-triage-color, 8%); }
+  }
+}

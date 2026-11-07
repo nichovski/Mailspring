@@ -52,7 +52,7 @@ export default class PreferencesTriage extends React.Component<
           </div>
           <p className="note">
             {localized(
-              'The sender, subject and start of each new inbox message are sent to the Mailspring backend for scoring by an AI provider.'
+              'The sender, subject and start of each new inbox message are sent to the Mailspring backend for scoring by an AI provider. In the New Look, once a day the sender, subject and preview of up to 8 conversations that need you are sent to write the Your day brief.'
             )}
           </p>
           <label className="threshold-label">{localized('Spam threshold')}</label>
@@ -62,7 +62,7 @@ export default class PreferencesTriage extends React.Component<
           <h6>{localized('Summaries and replies')}</h6>
           <p>
             {localized(
-              'Shows a summary, action items and suggested replies for the conversation you open, and can draft a reply.'
+              'Shows a summary, action items and suggested replies for the conversation you open, can draft a reply, and answers questions you ask in the search bar.'
             )}
           </p>
           <div className="toggle-row">
@@ -75,7 +75,7 @@ export default class PreferencesTriage extends React.Component<
           </div>
           <p className="note">
             {localized(
-              'The text of the conversation you open (up to the last 8 messages, without quoted text) is sent to the Mailspring backend and an AI provider.'
+              'The text of the conversation you open (up to the last 8 messages, without quoted text) is sent to the Mailspring backend and an AI provider. When you click Ask, your question and a preview of up to 8 matching conversations are sent.'
             )}
           </p>
         </section>
