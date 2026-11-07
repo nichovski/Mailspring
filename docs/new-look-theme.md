@@ -47,6 +47,78 @@ Non-obvious choices:
 - **Five `@ai-triage-*` variables in `base/ui-variables.less`**, so the triage styles have colours in every theme; the New Look themes set the exact canvas tokens.
 - **The avatar** shows the latest incoming sender (or, for sent mail, the first other participant) as initials on `hsl(Utils.hueForString(email), 50%, 45%)`, the same colour rule as `ContactProfilePhoto`, with no network request.
 
+## Layout: flat sidebar and list header
+
+Added on branch `feat/new-look-layout`. Like the rest of the theme, this applies only while New Look or New Look Dark is active.
+
+### What it does
+
+- **Sidebar:**
+  - The brand reads "Bogdan's mail".
+  - An "All inboxes" row shows two initials, a "+N" chip and "N accounts". It opens the account menu that the stock switcher icon opened.
+  - One flat folder list: Priority, Inbox, Starred, Snoozed, Sent, Drafts, Archive, Trash, Probable spam, then Important, Spam and Reminders.
+  - The Unread row and the per-account sub-rows are gone. The per-account label sections stay.
+  - A footer shows the real sync status ("Up to date", "Syncing" or "Sync error"), with Add account and Preferences buttons.
+- **List header:** on every folder (and Drafts) it shows the folder title, "N conversations · M unread", and an All/Unread switch. The switch works on any category folder.
+
+### How it works
+
+- **Flat list:**
+  - `new-look` registers `{ name: 'NewLookFlatSidebar', flatSidebar: true }` in `ExtensionRegistry.AccountSidebar`. `SidebarStore` already rebuilds when that registry changes, and it then uses `SidebarSection.flatSectionForAccounts()`.
+  - That method wraps the stock `standardSectionForAccounts()`: it drops Unread, empties `children` and stable-sorts by `FLAT_ORDER`.
+  - The theme check lives only in `new-look/main.ts`. `sidebarKeysCollapsed` is never written, so stock Light gets its old expand state back.
+  - The sort key checks the perspective flags first (`unread`, `starred`, `drafts`), then the first category role, then the item id. The flags are needed because Unread carries the inbox role, Drafts has the id `Drafts-undefined`, and the triage views have no categories.
+  - `archive` and `all` share one rank: on Gmail, All Mail is the Archive row.
+- **All/Unread:**
+  - The flag is `ThreadListStore._unreadOnly`. When it is on, the data source is built from `MailboxPerspective.forUnread(perspective.categories()).threads()`.
+  - Its `UnreadQuerySubscription` keeps a thread you read in the list until you leave the view. A plain `unread: true` filter would drop the focused thread once it is marked read, focus the next one, mark that read, and run through the whole list in split mode.
+  - The focused perspective stays the real folder, so the title, the sidebar selection and archive or trash act on that folder.
+  - The switch is hidden for Spam and Trash (the unread query needs All Mail), and for Starred, Drafts, the triage views and search (no categories).
+  - The flag stays on across folders and resets when New Look turns off.
+- **Count text:** sums `ThreadCountsStore` totals and unread over the perspective's categories. These are in-memory lookups, so no query runs. The text shows folder totals even while Unread is on.
+- **Footer:** reads `FolderSyncProgressStore.getSummary().phrase` and `Account.hasSyncStateError()`. No last-sync time exists anywhere, so it does not show "Synced just now".
+- **CSS:** scoped like the rest of the theme. It hides the stock switcher icon and the "All Accounts" heading. Labels in the sidebar header and footer stay on one line, with an ellipsis when the sidebar is narrow.
+
+### Decisions
+
+- The Smart triage card stays on Priority and Probable spam only. The canvas shows it only there (`showTriage: isPri || isSpamView`).
+- Important, real Spam and Reminders are kept after Probable spam. Dropping them would hide real features: without Smart Triage, the real Spam folder would be unreachable.
+- Labels are not merged across accounts. Rename, delete and create act on a single category, so a merged row would break editing.
+- Rejected:
+  - A separate New Look sidebar component. It would re-implement OutlineView drag-drop, context menus and keyboard navigation.
+  - CSS-only hiding. It cannot reorder rows, and hidden rows stay in keyboard navigation.
+
+### Review
+
+GLM-5.3 Flash and DeepSeek V4 Flash reviewed the diff. No code changes came out of it.
+
+Rejected after checking the code:
+- `categories()` can be null: no. The base class returns `[]`, and category perspectives return an array.
+- The flag is never reset: no. `new-look/main.ts` resets it.
+- `all` is out of order: no. It is the Archive row.
+- Counts are double-counted across categories: no. Category ids are per account.
+- The Add account IPC is not wired: no. It is the same call the stock switcher makes.
+
+Won't fix: the spec's `afterEach` does not rebuild the data source. Spies are still active there, and the leftover state is harmless.
+
+### Validation
+
+- `npm run lint:check` and `npm run typecheck`: pass.
+- `npm test -- --spec-file-pattern='sidebar-section-spec|thread-list-store-spec|sidebar-item-spec|new-look/specs|ai-triage|thread-list'`: 63 passing.
+- Checked in the dev app with 22 accounts:
+  - New Look light and dark: the flat order, the account row ("+20", "22 accounts"), the footer, and the header on Inbox ("67,506 conversations · 9 unread").
+  - With Unread on in split mode, a thread opened from the list stayed in the list after it was read.
+  - Priority shows the triage card and no switch.
+  - Switching to stock Light left no header, account row or footer. The switcher icon, the Unread row and the "All Accounts" heading came back, and the filter was off.
+
+### Not done
+
+- 18px SVG row icons: the PNG mask icons stay.
+- Label colour dots.
+- The Unread filter on Starred and the triage views.
+- The search box stays in the toolbar.
+- Your day, Ask, Summary and suggested replies are a later step.
+
 ## Review
 
 Two reviewers (GLM-5.3 Flash, DeepSeek V4 Flash) on the diff without the font files.
@@ -65,6 +137,6 @@ Found in the app check and fixed: plain-text mail rendered in the monospace fall
 ## Notes
 
 - Not checked on macOS or Windows.
-- Known differences from the canvas (phase 2): the account switcher redesign (Compose sits above it), per-label chip colours (label pills keep their colours, and on the selected row the base `!important` keeps a faint background), the All/Unread switch, the message count pill, Your day, Ask, Summary, suggested replies.
+- Known differences from the canvas: per-label chip colours (label pills keep their colours, and on the selected row the base `!important` keeps a faint background), the message count pill, Your day, Ask, Summary, suggested replies. The account switcher and the All/Unread switch are covered in "Layout" above.
 - The thread list switches to wide rows when its column is wide; the canvas only shows the narrow layout.
 - `INTERNAL_THEME_ORDER` in the theme picker does not list the new themes, so they sort with community themes.
