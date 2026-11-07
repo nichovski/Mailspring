@@ -1,8 +1,14 @@
 import React, { Component } from 'react';
-import { ListensToFluxStore, RetinaImg, KeyCommandsRegion } from 'mailspring-component-kit';
+import {
+  ListensToFluxStore,
+  RetinaImg,
+  KeyCommandsRegion,
+  InjectedComponentSet,
+} from 'mailspring-component-kit';
 import {
   localized,
   Actions,
+  ComponentRegistry,
   FocusedPerspectiveStore,
   WorkspaceStore,
   MailboxPerspective,
@@ -21,6 +27,8 @@ import {
   getThreadSuggestions,
   wrapInQuotes,
 } from './search-bar-util';
+
+const ASK_ROLE = 'ThreadSearchBar:Ask';
 
 interface ThreadSearchBarProps {
   query: string;
@@ -301,6 +309,9 @@ class ThreadSearchBar extends Component<ThreadSearchBarProps, ThreadSearchBarSta
   };
 
   _placeholder = () => {
+    if (ComponentRegistry.findComponentsMatching({ role: ASK_ROLE }).length > 0) {
+      return localized('Search, or ask about your mail');
+    }
     if (this._initialQueryForPerspective() === '') {
       const countMailboxes = FocusedPerspectiveStore.current()?.accountIds?.length || 0;
       if (countMailboxes == 1) {
@@ -365,6 +376,11 @@ class ThreadSearchBar extends Component<ThreadSearchBarProps, ThreadSearchBarSta
           role="searchbox"
           aria-autocomplete="list"
         />
+        <InjectedComponentSet
+          matching={{ role: ASK_ROLE }}
+          exposedProps={{ query }}
+          containersRequired={false}
+        />
         {showX && (
           <RetinaImg
             name="searchclear.png"
@@ -416,7 +432,7 @@ class ThreadSearchBar extends Component<ThreadSearchBarProps, ThreadSearchBarSta
 }
 
 export default ListensToFluxStore(ThreadSearchBar, {
-  stores: [SearchStore, FocusedPerspectiveStore],
+  stores: [SearchStore, FocusedPerspectiveStore, ComponentRegistry],
   getStateFromStores() {
     return {
       query: SearchStore.query(),

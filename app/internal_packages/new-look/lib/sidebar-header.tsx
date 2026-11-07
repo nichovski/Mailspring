@@ -1,4 +1,5 @@
 import React from 'react';
+import { InjectedComponentSet } from 'mailspring-component-kit';
 import { Actions, localized } from 'mailspring-exports';
 import { AccountRow } from './account-row';
 
@@ -60,6 +61,11 @@ export class SidebarHeader extends React.Component {
           <span>{localized('Compose')}</span>
           {key && <kbd>{key}</kbd>}
         </button>
+        <InjectedComponentSet
+          matching={{ role: 'NewLookSidebar:Day' }}
+          direction="column"
+          containersRequired={false}
+        />
       </div>
     );
   }

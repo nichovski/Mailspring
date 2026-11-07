@@ -11,7 +11,7 @@ import {
 import TriageStore from './triage-store';
 import { buildState, toScore } from './triage-logic';
 
-const WINDOW = 200;
+export const WINDOW = 200;
 const CONCURRENCY = 3;
 const MAX_RETRIES = 3;
 const FIRST_PAUSE_MS = 30_000;
