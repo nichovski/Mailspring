@@ -4,6 +4,8 @@
 
 Features:
 
+- Added AI summaries and replies (off by default, Preferences → Smart Triage): a Summary card with "For you" action items above the open conversation, suggested replies above the reply area, and Draft with AI with Default, Shorter and More formal tones. Nothing is sent automatically, and spam-flagged threads are skipped. Needs the self-hosted backend's `/api/ai/summary` and `/api/ai/draft`.
+- New Look's sidebar footer has a Sync New Mail Now button.
 - New Look now has the canvas layout: a flat folder list (Priority, Inbox, Starred, Snoozed, Sent, Drafts, Archive, Trash, Probable spam) instead of per-account sub-rows, an "All inboxes" account row, a footer with sync status, Add account and Preferences, and a header on every folder with the title, conversation and unread counts, and an All/Unread switch.
 - Added the New Look and New Look Dark themes (Preferences → Appearance): Geist and Newsreader fonts bundled for offline use, a sidebar with the brand and a Compose button, initials avatars and an unread dot in thread rows, a serif subject line and card-style messages. The Smart Triage meter now sits next to the time, and its chip, card and spam warning have a new look in every theme.
 - Added Smart Triage (off by default, Preferences → Smart Triage): new inbox mail gets a spam probability and an attention score, with a Priority view sorted by attention, a Probable spam view, an attention meter and spam chips in the thread list, a spam warning in the message view, and an adjustable spam threshold. Needs the self-hosted backend's `/api/ai/triage`.
