@@ -66,7 +66,12 @@
         border-right: 0;
       }
     }
+    // Inset to line up with the 16px padding of the list header below it.
     .thread-search-bar {
+      margin-left: 16px;
+      margin-right: 16px;
+      padding-left: 10px;
+      padding-right: 10px;
       background: @nl-alt;
       border: 1px solid @nl-line;
       border-radius: 10px;
@@ -378,7 +383,10 @@
       gap: 8px;
       min-width: 0;
     }
+    // The count gives way before the folder name does.
     h1 {
+      flex-shrink: 0;
+      max-width: 100%;
       margin: 0;
       overflow: hidden;
       font-size: 20px;
@@ -389,8 +397,11 @@
       white-space: nowrap;
     }
     .count {
+      min-width: 0;
+      overflow: hidden;
       font-size: 13px;
       color: @nl-faint;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }
     .segmented {
