@@ -4,7 +4,7 @@
 
 Features:
 
-- Added Ask and Your day. Ask (needs Summaries and replies): type a question in the search bar and click Ask; the AI turns it into a search, the list shows the matches, and an Answer card answers from them. Your day (New Look, needs Smart Triage): a daily brief in the sidebar of what needs you, with a button that opens Priority. Needs the self-hosted backend's `/api/ai/ask/*` and `/api/ai/day`.
+- Added Ask and Your day. Ask (needs Summaries and replies): type a question in the search bar and click Ask; the AI turns it into a search, the list shows the matches, and an Answer card answers from them. Your day (New Look, needs Smart Triage): a daily brief in the sidebar of what needs you, with a button that opens Priority; an arrow hides or shows the brief. Needs the self-hosted backend's `/api/ai/ask/*` and `/api/ai/day`.
 - Added AI summaries and replies (off by default, Preferences → Smart Triage): a Summary card with "For you" action items above the open conversation, suggested replies above the reply area, and Draft with AI with Default, Shorter and More formal tones. Nothing is sent automatically, and spam-flagged threads are skipped. Needs the self-hosted backend's `/api/ai/summary` and `/api/ai/draft`.
 - New Look's sidebar footer has a Sync New Mail Now button.
 - New Look now has the canvas layout: a flat folder list (Priority, Inbox, Starred, Snoozed, Sent, Drafts, Archive, Trash, Probable spam) instead of per-account sub-rows, an "All inboxes" account row, a footer with sync status, Add account and Preferences, and a header on every folder with the title, conversation and unread counts, and an All/Unread switch.

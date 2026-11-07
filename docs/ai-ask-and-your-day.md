@@ -8,6 +8,7 @@
   - It shows a 2-3 sentence brief of what needs you today, for example: "16 conversations need you. Peter needs the contract signed before Tuesday…"
   - It shows the time the brief was made, and a "Show what needs me" button that opens Priority.
   - It is made once a day, on the first check after 06:00. When nothing needs you, it says "Nothing needs you right now." and makes no AI call.
+  - An arrow next to the time hides the brief, leaving only the header, and shows it again. The choice is saved in `ai-triage.dayCollapsed`. It is an icon, not the word "Hide", because the sidebar has no room for a word next to the time. In a very narrow sidebar only the title shortens.
 - **Ask**: type a question in the search bar and click the **Ask** badge inside it. It needs Summaries and replies on, and works in every theme.
   - The AI turns the question into a normal Mailspring search, so the thread list shows the matches.
   - An **Answer** card above the list gives a 1-3 sentence answer from the matches, the "Searched for" pills, and Clear (which goes back to the view you came from).
