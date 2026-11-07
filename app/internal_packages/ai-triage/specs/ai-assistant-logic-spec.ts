@@ -139,10 +139,10 @@ describe('assistant-logic', function () {
       const pick = pickDay(
         [thread('t1'), thread('t2'), thread('t3'), thread('t4'), thread('t5')],
         lookup({
-          t1: { s: 0.1, a: 0.5 },
+          t1: { s: 0.1, a: 0.76 },
           t2: { s: 0.95, a: 0.9 },
           t3: { s: 0.1, a: 0.8 },
-          t4: { s: 0.1, a: 0.39 },
+          t4: { s: 0.1, a: 0.74 },
           t5: { f: 1 },
         }),
         0.9,

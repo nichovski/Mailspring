@@ -5,7 +5,9 @@ import { WINDOW } from './triage-scorer';
 export const MAX_THREADS = 8;
 const MAX_SNIPPET = 400;
 const DAY_MS = 24 * 3600_000;
-export const NEEDS_ATTENTION = 0.4; // meterLevel Medium and up
+// The meter's High level. Medium and up counted most recent mail as needing the user, which made
+// the brief's count meaningless (126 vs 16 on a real 22-account inbox).
+export const NEEDS_ATTENTION = 0.75;
 
 export interface MailItem {
   from: string;

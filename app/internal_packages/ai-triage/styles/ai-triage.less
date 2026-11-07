@@ -499,10 +499,14 @@
     font-weight: 600;
     color: @ai-triage-text-color;
   }
-  .title { flex: 1; }
+  .title {
+    flex: 1;
+    white-space: nowrap;
+  }
   .time {
     font-weight: 500;
     color: @text-color-very-subtle;
+    white-space: nowrap;
   }
   p {
     margin: 0;
@@ -524,6 +528,7 @@
     color: @ai-triage-text-color;
     font-size: 13px;
     font-weight: 600;
+    text-align: left;
 
     &:hover { background: fade(@ai-triage-color, 8%); }
   }

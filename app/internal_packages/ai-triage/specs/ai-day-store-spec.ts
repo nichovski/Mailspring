@@ -33,7 +33,7 @@ describe('DayStore', function () {
     spyOn(TriageStore, 'threshold').andReturn(0.9);
     entry = spyOn(TriageStore, 'entry').andCallFake(
       (id: string) =>
-        ({ t1: { s: 0.1, a: 0.8 }, t2: { s: 0.95, a: 0.9 }, t3: { s: 0.1, a: 0.5 } })[id]
+        ({ t1: { s: 0.1, a: 0.8 }, t2: { s: 0.95, a: 0.9 }, t3: { s: 0.1, a: 0.76 } })[id]
     );
   });
 
