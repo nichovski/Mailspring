@@ -37,6 +37,7 @@ describe('ReadingStore', function () {
     lastId = 'm1';
     ReadingStore._entries = new Map();
     ReadingStore._inFlight.clear();
+    ReadingStore._failed.clear();
     ReadingStore._aiDrafts.clear();
     ReadingStore._halted = false;
     ReadingStore._pendingKey = null;
@@ -119,6 +120,17 @@ describe('ReadingStore', function () {
     advanceClock(1000);
     await settle();
     expect(ReadingStore._entries.get('t1')).toEqual({ k: 'm1', f: 1 });
+    ReadingStore._onMessages();
+    advanceClock(1000);
+    expect(request.callCount).toBe(1);
+  });
+
+  it('does not repeat a request that failed with a server error', async function () {
+    request.andReturn(Promise.reject(Object.assign(new Error('bad gateway'), { statusCode: 502 })));
+    ReadingStore._onMessages();
+    advanceClock(1000);
+    await settle();
+    expect(ReadingStore._entries.has('t1')).toBe(false);
     ReadingStore._onMessages();
     advanceClock(1000);
     expect(request.callCount).toBe(1);

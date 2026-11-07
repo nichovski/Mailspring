@@ -60,7 +60,10 @@ export class AiReplySuggestions extends React.Component<Props, { busy: boolean; 
       !last ||
       !ReadingStore.available() ||
       triageFlagged(thread.id) ||
-      !AppEnv.config.get('core.composing.html')
+      !AppEnv.config.get('core.composing.html') ||
+      // Like the canvas, suggestions are for starting a reply: once a draft exists, a second
+      // click would open a second draft because the first is no longer pristine.
+      messages.some((m) => m.draft)
     ) {
       return false;
     }

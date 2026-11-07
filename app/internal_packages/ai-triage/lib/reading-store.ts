@@ -39,6 +39,9 @@ export const triageFlagged = (threadId: string) =>
 class ReadingStore extends MailspringStore {
   _entries: Map<string, ReadingEntry> | null = null;
   _inFlight = new Map<string, string>();
+  // Thread:lastId keys whose request failed for another reason (timeout, 5xx). Kept in memory so
+  // MessageStore triggers on a focused thread cannot repeat a paid request; a restart retries.
+  _failed = new Set<string>();
   _halted = false;
   _timer: ReturnType<typeof setTimeout> | null = null;
   _pendingKey: string | null = null;
@@ -110,7 +113,8 @@ class ReadingStore extends MailspringStore {
       !last ||
       triageFlagged(thread.id) ||
       entry?.k === last.id ||
-      this._inFlight.get(thread.id) === last.id
+      this._inFlight.get(thread.id) === last.id ||
+      this._failed.has(`${thread.id}:${last.id}`)
     ) {
       this._clearTimer();
       return;
@@ -176,8 +180,11 @@ class ReadingStore extends MailspringStore {
         summary ? { k: lastId, n: body.messages.length, ...summary } : { k: lastId, f: 1 }
       );
     } catch (err) {
-      if (!this._halt(err.statusCode) && err.statusCode === 422) {
+      const halted = this._halt(err.statusCode);
+      if (!halted && err.statusCode === 422) {
         this._set(thread.id, { k: lastId, f: 1 });
+      } else if (!halted) {
+        this._failed.add(`${thread.id}:${lastId}`);
       }
     } finally {
       this._inFlight.delete(thread.id);
