@@ -1,4 +1,10 @@
-import { Actions, FocusedPerspectiveStore, MailspringAPIRequest, Thread } from 'mailspring-exports';
+import {
+  Actions,
+  FocusedPerspectiveStore,
+  MailspringAPIRequest,
+  Message,
+  Thread,
+} from 'mailspring-exports';
 import AskStore from '../lib/ask-store';
 
 async function settle() {
@@ -15,7 +21,13 @@ const filters = {
   unread: false,
   attachment: false,
 };
-const item = { from: 'Lena <lena@x.io>', subject: 'S', date: '2026-11-06T09:41:00Z', snippet: 'x' };
+const message = new Message({
+  threadId: 't1',
+  from: [],
+  date: new Date('2026-11-06T09:41:00Z'),
+  body: 'Tuesday',
+  plaintext: true,
+});
 
 describe('AskStore', function () {
   let request: jasmine.Spy;
@@ -29,11 +41,13 @@ describe('AskStore', function () {
     AskStore._ask = null;
     AskStore._searches.clear();
     request = spyOn(MailspringAPIRequest, 'makeRequest').andCallFake(({ path }) =>
-      Promise.resolve(path === '/api/ai/ask/search' ? filters : { answer: 'Tuesday.' })
+      Promise.resolve(
+        path === '/api/ai/ask/search' ? filters : { answer: 'Tuesday.', sources: [1, 5] }
+      )
     );
     submitted = spyOn(Actions, 'searchQuerySubmitted');
     matches = spyOn(AskStore, '_matches').andReturn(Promise.resolve([new Thread({ id: 't1' })]));
-    spyOn(AskStore, '_items').andReturn(Promise.resolve([item]));
+    spyOn(AskStore, '_messages').andReturn(Promise.resolve([message]));
     perspective = spyOn(FocusedPerspectiveStore, 'current').andReturn({ accountIds: ['a1'] });
   });
 
@@ -46,12 +60,28 @@ describe('AskStore', function () {
     expect(ask.pills).toEqual(['From: Lena', 'Words: payout']);
     expect(submitted).toHaveBeenCalledWith('from:"Lena" "payout"');
     expect(callsTo('/api/ai/ask/answer')).toBe(1);
+    const body = request.calls.find((c) => c.args[0].path === '/api/ai/ask/answer').args[0].body;
+    expect(body.conversations[0].messages[0].text).toBe('Tuesday');
+    expect(ask.sources.map((t) => t.id)).toEqual(['t1']);
+  });
+
+  it('retries with only the people and dates when the topic finds nothing', async function () {
+    matches.andCallFake((q: string) =>
+      Promise.resolve(q.includes('payout') ? [] : [new Thread({ id: 't1' })])
+    );
+    AskStore.ask('What about the payout?');
+    await settle();
+    expect(matches.calls.length).toBe(2);
+    expect(submitted).toHaveBeenCalledWith('from:"Lena"');
+    expect(AskStore.current().pills).toEqual(['From: Lena']);
+    expect(AskStore.current().answer).toBe('Tuesday.');
   });
 
   it('does not ask the model when nothing matches', async function () {
     matches.andReturn(Promise.resolve([]));
     AskStore.ask('anything');
     await settle();
+    expect(matches.calls.length).toBe(2);
     expect(callsTo('/api/ai/ask/answer')).toBe(0);
     expect(AskStore.current().answer).toBe('No matching mail found.');
   });

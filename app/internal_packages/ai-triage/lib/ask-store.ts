@@ -5,19 +5,25 @@ import {
   FocusedPerspectiveStore,
   localized,
   MailspringAPIRequest,
+  Message,
   SearchQueryParser,
   Thread,
 } from 'mailspring-exports';
 import {
+  ASK_MAX_THREADS,
   AskSearch,
-  MAX_THREADS,
-  mailItems,
+  askConversations,
+  askPick,
+  broaden,
   toAnswer,
   toPills,
   toQuery,
   toSearch,
   todayString,
 } from './assistant-logic';
+
+const BODY_WAIT_MS = 20000;
+const BODY_POLL_MS = 500;
 
 type AskStatus = 'searching' | 'answering' | 'done' | 'error';
 export interface Ask {
@@ -26,6 +32,7 @@ export interface Ask {
   query?: string;
   pills?: string[];
   answer?: string;
+  sources?: Thread[];
 }
 
 /**
@@ -79,11 +86,34 @@ class AskStore extends MailspringStore {
     return q
       .background()
       .order(Thread.attributes.lastMessageReceivedTimestamp.descending())
-      .limit(MAX_THREADS);
+      .limit(ASK_MAX_THREADS);
   }
 
-  _items(threads: Thread[]) {
-    return mailItems(threads);
+  /**
+   * The sync engine downloads bodies of older mail only on demand, so the bodies Ask will read are
+   * requested and waited for briefly; any still missing fall back to the snippet or are skipped.
+   */
+  async _messages(threads: Thread[]): Promise<Message[]> {
+    let messages = await DatabaseStore.findAll<Message>(Message)
+      .where({ threadId: threads.map((t) => t.id) })
+      .include(Message.attributes.body)
+      .background();
+    let missing = threads.flatMap((t) => askPick(t, messages)).filter((m) => m.body === null);
+    if (missing.length) {
+      Actions.fetchBodies(missing);
+      const deadline = Date.now() + BODY_WAIT_MS;
+      while (missing.length && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, BODY_POLL_MS));
+        const arrived = (
+          await DatabaseStore.findAll<Message>(Message)
+            .where(Message.attributes.id.in(missing.map((m) => m.id)))
+            .include(Message.attributes.body)
+        ).filter((m) => m.body !== null);
+        messages = messages.map((m) => arrived.find((a) => a.id === m.id) || m);
+        missing = missing.filter((m) => !arrived.find((a) => a.id === m.id));
+      }
+    }
+    return messages;
   }
 
   _set(ask: Ask, patch: Partial<Ask>) {
@@ -112,7 +142,7 @@ class AskStore extends MailspringStore {
       if (this._ask !== ask) {
         return;
       }
-      const query = search ? toQuery(search) : '';
+      let query = search ? toQuery(search) : '';
       if (!query) {
         this._set(ask, {
           status: 'error',
@@ -123,31 +153,43 @@ class AskStore extends MailspringStore {
         return;
       }
       const accountIds = FocusedPerspectiveStore.current().accountIds;
-      this._set(ask, { query, pills: toPills(search) });
-      Actions.searchQuerySubmitted(query);
-      const threads = await this._matches(query, accountIds);
+      let threads = await this._matches(query, accountIds);
+      const wider = threads.length === 0 && broaden(search);
+      if (wider) {
+        search = wider;
+        query = toQuery(wider);
+        threads = await this._matches(query, accountIds);
+      }
       if (this._ask !== ask) {
         return;
       }
+      this._set(ask, { query, pills: toPills(search) });
+      Actions.searchQuerySubmitted(query);
       if (threads.length === 0) {
         this._set(ask, { status: 'done', answer: localized('No matching mail found.') });
         return;
       }
       this._set(ask, { status: 'answering' });
-      const answer = toAnswer(
+      const payload = askConversations(threads, await this._messages(threads));
+      if (payload.conversations.length === 0) {
+        this._set(ask, { status: 'done', answer: localized('No matching mail found.') });
+        return;
+      }
+      const result = toAnswer(
         await this._post(
           '/api/ai/ask/answer',
-          { question, today, threads: await this._items(threads) },
-          25000
+          { question, today, conversations: payload.conversations },
+          70000
         )
       );
       if (this._ask !== ask) {
         return;
       }
-      if (!answer) {
+      if (!result) {
         throw new Error('malformed');
       }
-      this._set(ask, { status: 'done', answer });
+      const sources = result.sources.map((n) => payload.threads[n - 1]).filter(Boolean);
+      this._set(ask, { status: 'done', answer: result.answer, sources });
     } catch (err) {
       if (this._ask === ask) {
         const off = [401, 402, 503].includes(err.statusCode);
