@@ -24,6 +24,7 @@ import {
 class DayStore extends MailspringStore {
   _brief: DayBrief | null | undefined = undefined;
   _loading = false;
+  _checking = false;
   _quiet = false;
   _tried = 0;
 
@@ -91,11 +92,19 @@ class DayStore extends MailspringStore {
 
   async refresh(now = new Date()) {
     const start = periodStart(now);
-    if (this._loading || this._tried === start || this.current(now)) {
+    if (this._checking || this._loading || this._tried === start || this.current(now)) {
       return;
     }
+    // The mount check and the interval can overlap while the inbox query runs.
+    this._checking = true;
+    let threads: Thread[];
+    try {
+      threads = await this._inbox();
+    } finally {
+      this._checking = false;
+    }
     const pick = pickDay(
-      await this._inbox(),
+      threads,
       (id) => TriageStore.entry(id),
       TriageStore.threshold(),
       now.getTime()

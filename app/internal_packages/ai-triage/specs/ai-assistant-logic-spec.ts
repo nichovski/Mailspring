@@ -23,6 +23,13 @@ const empty = {
 
 describe('assistant-logic', function () {
   describe('toSearch', function () {
+    it('drops backslashes and repeated values', function () {
+      const s = toSearch({ from: ['Lena\\', 'Lena'], words: ['a\\b'], to: [], subject: [] });
+      expect(s.from).toEqual(['Lena']);
+      expect(s.words).toEqual(['ab']);
+      expect(() => SearchQueryParser.parse(toQuery(s))).not.toThrow();
+    });
+
     it('strips quotes, drops reserved words and caps the lists', function () {
       const s = toSearch({
         from: ['"Lena"', 'to', 'a', 'b', 'c'],

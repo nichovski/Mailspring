@@ -37,7 +37,7 @@ export class DayCard extends React.Component {
           <span className="title">{localized('Your day')}</span>
           {brief && <span className="time">{DateUtils.shortTimeString(new Date(brief.t))}</span>}
         </div>
-        <p>
+        <p aria-live="polite">
           {brief
             ? brief.brief
             : DayStore.loading()

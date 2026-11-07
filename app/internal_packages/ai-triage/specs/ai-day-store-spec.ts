@@ -24,6 +24,7 @@ describe('DayStore', function () {
     DayStore._tried = 0;
     DayStore._loading = false;
     DayStore._quiet = false;
+    DayStore._checking = false;
     spyOn(DayStore, '_inbox').andCallFake(() => Promise.resolve(threads));
     spyOn(DayStore, '_items').andReturn(Promise.resolve([item]));
     save = spyOn(DayStore, '_save');

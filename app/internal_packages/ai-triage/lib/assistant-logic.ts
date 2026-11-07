@@ -49,8 +49,9 @@ const RESERVED = new Set([
 const clean = (v: unknown, max: number) =>
   (Array.isArray(v) ? v : [])
     .filter((s): s is string => typeof s === 'string')
-    .map((s) => s.replace(/"/g, '').trim())
-    .filter((s) => s && !RESERVED.has(s.toLowerCase()))
+    // A backslash before the closing quote would escape it and leave the phrase open.
+    .map((s) => s.replace(/["\\]/g, '').trim())
+    .filter((s, i, all) => s && !RESERVED.has(s.toLowerCase()) && all.indexOf(s) === i)
     .slice(0, max);
 
 const isoDay = (v: unknown) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '');
