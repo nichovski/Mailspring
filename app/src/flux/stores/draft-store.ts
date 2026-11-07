@@ -224,14 +224,22 @@ class DraftStore extends MailspringStore {
     popout,
     type,
     behavior,
+    body,
   }: IThreadMessageModelOrId & {
     popout?: boolean;
     type: ReplyType;
     behavior: ReplyBehavior;
+    body?: string;
   }) => {
     const resolved = await this._modelifyContext({ thread, threadId, message, messageId });
     if (!resolved.message || !resolved.thread) return;
     const draft = await DraftFactory.createOrUpdateDraftForReply({ ...resolved, type, behavior });
+    // `body` is HTML placed above the quoted text. It goes in before prepareNewDraft runs, so the
+    // signature extension puts the signature between it and the quote.
+    if (body) {
+      draft.body = `${body}${draft.body}`;
+      draft.pristine = false;
+    }
     return this._finalizeAndPersistNewMessage(draft, { popout });
   };
 
