@@ -8,6 +8,7 @@ import {
   WorkspaceStore,
   FocusedContentStore,
   FocusedPerspectiveStore,
+  MailboxPerspective,
 } from 'mailspring-exports';
 import { ListTabular, ListDataSource } from 'mailspring-component-kit';
 import ThreadListDataSource from './thread-list-data-source';
@@ -21,6 +22,22 @@ class ThreadListStore extends MailspringStore {
     this.listenTo(FocusedPerspectiveStore, this._onPerspectiveChanged);
     this.createListDataSource();
   }
+
+  _unreadOnly = false;
+
+  unreadOnly = () => this._unreadOnly;
+
+  // Spam and Trash threads are outside All Mail, which the unread query requires.
+  canFilterUnread = (perspective: MailboxPerspective) =>
+    perspective.categories().length > 0 &&
+    !('unread' in perspective) &&
+    !['spam', 'trash'].includes(perspective.categoriesSharedRole());
+
+  setUnreadOnly = (value: boolean) => {
+    if (value === this._unreadOnly) return;
+    this._unreadOnly = value;
+    this.createListDataSource();
+  };
 
   dataSource = () => {
     return this._dataSource;
@@ -36,7 +53,13 @@ class ThreadListStore extends MailspringStore {
       this._dataSource = null;
     }
 
-    const threadsSubscription = FocusedPerspectiveStore.current().threads();
+    const perspective = FocusedPerspectiveStore.current();
+    // The unread subscription keeps threads read here until the view is left; a plain unread
+    // filter would drop the focused thread once it is marked read and advance through the list.
+    const threadsSubscription =
+      this._unreadOnly && this.canFilterUnread(perspective)
+        ? MailboxPerspective.forUnread(perspective.categories()).threads()
+        : perspective.threads();
     if (threadsSubscription) {
       this._dataSource = new ThreadListDataSource(threadsSubscription);
       this._dataSourceUnlisten = this._dataSource.listen(this._onDataChanged, this);

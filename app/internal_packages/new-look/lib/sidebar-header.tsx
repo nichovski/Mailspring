@@ -1,5 +1,6 @@
 import React from 'react';
 import { Actions, localized } from 'mailspring-exports';
+import { AccountRow } from './account-row';
 
 // The key hint shows only a plain single-key binding, such as "c" in the Gmail keymap.
 function composeKey(): string | null {
@@ -34,8 +35,9 @@ export class SidebarHeader extends React.Component {
               <path d="m4 7 8 6 8-6" />
             </svg>
           </span>
-          <span className="brand-name">Mailspring</span>
+          <span className="brand-name">Bogdan's mail</span>
         </div>
+        <AccountRow />
         <button
           className="compose"
           title={localized('Compose new message')}
