@@ -4,6 +4,7 @@
 
 Features:
 
+- Ask now reads whole conversations: up to 40 matching threads with the text of their latest messages, downloading older bodies when needed. Questions about a project or a client get a longer answer with dates, decisions and what is open, plus a list of the emails it used. When the topic finds nothing, it retries with only the people and dates.
 - Added Ask and Your day. Ask (needs Summaries and replies): type a question in the search bar and click Ask; the AI turns it into a search, the list shows the matches, and an Answer card answers from them. Your day (New Look, needs Smart Triage): a daily brief in the sidebar of what needs you, with a button that opens Priority; an arrow hides or shows the brief. Needs the self-hosted backend's `/api/ai/ask/*` and `/api/ai/day`.
 - Added AI summaries and replies (off by default, Preferences → Smart Triage): a Summary card with "For you" action items above the open conversation, suggested replies above the reply area, and Draft with AI with Default, Shorter and More formal tones. Nothing is sent automatically, and spam-flagged threads are skipped. Needs the self-hosted backend's `/api/ai/summary` and `/api/ai/draft`.
 - New Look's sidebar footer has a Sync New Mail Now button.
